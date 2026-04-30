@@ -150,16 +150,33 @@ async fn cmd_status() -> Result<()> {
 }
 
 async fn cmd_suggest() -> Result<()> {
-    let cwd = std::env::current_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "unknown".to_string());
-    let resp = send_request("suggest", serde_json::json!({"cwd": cwd})).await?;
+    let args: Vec<String> = std::env::args().collect();
+    let mut error_key: Option<String> = None;
+
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--error-key" => {
+                let v = args.get(i + 1).context("--error-key requires a value")?;
+                error_key = Some(v.clone());
+                i += 2;
+            }
+            other => anyhow::bail!("unknown flag in suggest: {}", other),
+        }
+    }
+
+    let resp = send_request("suggest", serde_json::json!({ "error_key": error_key })).await?;
     let result = resp.payload.get("result").unwrap_or(&resp.payload);
-    let s = result
-        .get("suggestion")
+    let text = result
+        .get("text")
         .and_then(|v| v.as_str())
         .unwrap_or("(no suggestion)");
-    println!("Suggestion for {}: {}", cwd, s);
+    let cached = result
+        .get("cached")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let cached_tag = if cached { " (cached)" } else { "" };
+    println!("Suggestion:{}\n{}", cached_tag, text);
     Ok(())
 }
 

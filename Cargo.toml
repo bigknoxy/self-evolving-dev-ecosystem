@@ -2,6 +2,7 @@
 members = [
     "crates/protocol",
     "crates/knowledge",
+    "crates/ollama",
     "crates/cortex",
     "crates/daemon",
     "crates/client",

@@ -74,3 +74,16 @@ pub struct StatusResponse {
     pub active_sensors: Vec<String>,
     pub events_processed: u64,
 }
+
+/// Suggest request payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuggestRequest {
+    pub error_key: Option<String>,
+}
+
+/// Suggest response payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuggestResponse {
+    pub text: String,
+    pub cached: bool,
+}

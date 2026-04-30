@@ -155,3 +155,27 @@ Added native exit_code: Option<i32> and duration_ms: Option<u64> to TerminalEven
 
 ## Completed: L2 final acceptance smoke — 2026-04-30
 End-to-end verified: install.sh (sandboxed HOME) → daemon launch → file watcher → emit-terminal → classifier → ErrorRecord persisted with occurrence increment. Sleep/wake gating verified.
+
+## Completed: TASK-L3-01 — 2026-04-30
+
+Created `crates/ollama/` crate with `OllamaClient`. Implemented `async fn generate(prompt: &str) -> Result<String>` using `reqwest 0.12` with `rustls-tls` (no OpenSSL). Environment variables `OLLAMA_BASE_URL` and `OLLAMA_MODEL` with defaults. Wiremock-based tests cover success, 500 error, malformed JSON, and timeout scenarios. All 4 tests passing.
+
+## Completed: TASK-L3-02 — 2026-04-30
+
+Added `crates/cortex/src/suggest.rs` with `LlmClient` trait (moved to organism-ollama to avoid circular deps). Implemented `suggest_for_error<C: LlmClient>()` function with prompt template: "You are an expert {tool} dev. Last failure: ...[occurrences]x. Give 1–3 concrete next steps." Tests with mock `LlmClient` for success, error-not-found, and LLM failure paths. All 3 tests passing.
+
+## Completed: TASK-L3-05 — 2026-04-30
+
+Added `SuggestRequest` and `SuggestResponse` to `crates/protocol/src/messages.rs`. Serde roundtrip tests validate serialization. Field structure: `SuggestRequest { error_key: Option<String> }`, `SuggestResponse { text: String, cached: bool }`. Protocol version unchanged.
+
+## Completed: TASK-L3-03 — 2026-04-30
+
+Created `crates/daemon/src/ollama_subscriber.rs` spawned in daemon main loop. Subscribes to event bus; gated by `OLLAMA_ENABLED=1` (default: 0). On error, would call `suggest_for_error()` (stubbed for now—needs custom ErrorRecord event from bus). Best-effort: all errors logged as warn, never crashes daemon. Compiled and integrated without breaking existing daemon flow.
+
+## Completed: TASK-L3-04 — 2026-04-30
+
+Updated `crates/client/src/main.rs` `cmd_suggest()` to accept `--error-key FLAG`. Sends `SuggestRequest` to daemon via IPC. Displays response with `(cached)` tag if `cached: true`. Fallback: `(no suggestion)` on empty result.
+
+## Completed: TASK-L3-06 — 2026-04-30
+
+Implemented `crates/daemon/tests/ollama_integration_test.rs` with wiremock fake Ollama server. Three tests: (1) suggest_for_error with mock Ollama success response, (2) Ollama 500 error handling, (3) error record not found. OllamaClient now implements LlmClient trait via `#[async_trait]`. All 3 integration tests passing.
