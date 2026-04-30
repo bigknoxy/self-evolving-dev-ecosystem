@@ -70,6 +70,16 @@ pub struct ProcessEvent {
     pub context: EventContext,
 }
 
+/// An error classification event: emitted after an error is classified and stored.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorClassifiedEvent {
+    pub ts: DateTime<Utc>,
+    pub hash: String,
+    pub tool: String,
+    pub error_kind: String,
+    pub command: String,
+}
+
 /// Union of all event types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -78,6 +88,7 @@ pub enum OrganismEvent {
     File(FileEvent),
     Git(GitEvent),
     Process(ProcessEvent),
+    ErrorClassified(ErrorClassifiedEvent),
 }
 
 impl OrganismEvent {
@@ -87,6 +98,7 @@ impl OrganismEvent {
             Self::File(e) => e.ts,
             Self::Git(e) => e.ts,
             Self::Process(e) => e.ts,
+            Self::ErrorClassified(e) => e.ts,
         }
     }
 }
@@ -133,5 +145,42 @@ mod tests {
         let evt: TerminalEvent = serde_json::from_str(json).unwrap();
         assert_eq!(evt.exit_code, None);
         assert_eq!(evt.duration_ms, None);
+    }
+
+    #[test]
+    fn test_error_classified_event_roundtrip() {
+        let evt = ErrorClassifiedEvent {
+            ts: Utc::now(),
+            hash: "abc123".to_string(),
+            tool: "cargo".to_string(),
+            error_kind: "E0599".to_string(),
+            command: "cargo build".to_string(),
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        let back: ErrorClassifiedEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.hash, "abc123");
+        assert_eq!(back.tool, "cargo");
+        assert_eq!(back.error_kind, "E0599");
+        assert_eq!(back.command, "cargo build");
+    }
+
+    #[test]
+    fn test_organism_event_error_classified_union_roundtrip() {
+        let evt = OrganismEvent::ErrorClassified(ErrorClassifiedEvent {
+            ts: Utc::now(),
+            hash: "test_hash".to_string(),
+            tool: "rustc".to_string(),
+            error_kind: "error".to_string(),
+            command: "cargo test".to_string(),
+        });
+        let json = serde_json::to_string(&evt).unwrap();
+        let back: OrganismEvent = serde_json::from_str(&json).unwrap();
+        match back {
+            OrganismEvent::ErrorClassified(e) => {
+                assert_eq!(e.hash, "test_hash");
+                assert_eq!(e.tool, "rustc");
+            }
+            _ => panic!("expected ErrorClassified variant"),
+        }
     }
 }

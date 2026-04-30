@@ -14,6 +14,7 @@ use tokio::net::UnixStream;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
 
+use organism_knowledge::KnowledgeStore;
 use organism_protocol::{Envelope, EventContext, OrganismEvent, TerminalEvent};
 
 #[allow(dead_code)]
@@ -58,12 +59,14 @@ async fn event_ingest_records_and_appears_in_log() {
 
     let state = Arc::new(RwLock::new(DaemonState::new()));
     let bus = Arc::new(EventBus::new(64));
+    let knowledge = Arc::new(RwLock::new(KnowledgeStore::open(tmp.path()).unwrap()));
 
     let serve_state = state.clone();
     let serve_bus = bus.clone();
+    let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
     let server_handle = tokio::spawn(async move {
-        let _ = ipc::serve(serve_state, serve_bus, serve_socket).await;
+        let _ = ipc::serve(serve_state, serve_bus, serve_knowledge, serve_socket).await;
     });
 
     for _ in 0..50 {
@@ -153,12 +156,14 @@ async fn event_ingest_when_asleep_acks_but_does_not_record() {
 
     let state = Arc::new(RwLock::new(DaemonState::new()));
     let bus = Arc::new(EventBus::new(64));
+    let knowledge = Arc::new(RwLock::new(KnowledgeStore::open(tmp.path()).unwrap()));
 
     let serve_state = state.clone();
     let serve_bus = bus.clone();
+    let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
     let server_handle = tokio::spawn(async move {
-        let _ = ipc::serve(serve_state, serve_bus, serve_socket).await;
+        let _ = ipc::serve(serve_state, serve_bus, serve_knowledge, serve_socket).await;
     });
 
     for _ in 0..50 {

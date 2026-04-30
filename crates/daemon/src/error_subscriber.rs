@@ -13,7 +13,7 @@ use tracing::{debug, warn};
 
 use organism_cortex::classify;
 use organism_knowledge::{ErrorRecord, KnowledgeStore};
-use organism_protocol::OrganismEvent;
+use organism_protocol::{ErrorClassifiedEvent, OrganismEvent};
 
 use crate::event_bus::EventBus;
 
@@ -33,7 +33,13 @@ pub async fn run(bus: Arc<EventBus>, knowledge: Arc<RwLock<KnowledgeStore>>) -> 
                 let Some(sig) = sig else { continue };
                 let mut store = knowledge.write().await;
                 let now = Utc::now();
-                match store.get_error(&sig.hash) {
+
+                // Clone sig fields before consuming in ErrorRecord construction
+                let sig_hash = sig.hash.clone();
+                let sig_tool = sig.tool.clone();
+                let sig_kind = sig.kind.clone();
+
+                match store.get_error(&sig_hash) {
                     Ok(Some(mut existing)) => {
                         existing.occurrences = existing.occurrences.saturating_add(1);
                         existing.last_seen = now;
@@ -41,12 +47,20 @@ pub async fn run(bus: Arc<EventBus>, knowledge: Arc<RwLock<KnowledgeStore>>) -> 
                         if let Err(e) = store.put_error(&existing) {
                             warn!(error = %e, "failed to update ErrorRecord");
                         }
+                        // Emit ErrorClassified event after update
+                        let _ = bus.publish(OrganismEvent::ErrorClassified(ErrorClassifiedEvent {
+                            ts: now,
+                            hash: sig_hash,
+                            tool: sig_tool,
+                            error_kind: sig_kind,
+                            command: term.command_line.clone(),
+                        }));
                     }
                     Ok(None) => {
                         let rec = ErrorRecord {
-                            tool: sig.tool,
-                            kind: sig.kind,
-                            hash: sig.hash,
+                            tool: sig_tool.clone(),
+                            kind: sig_kind.clone(),
+                            hash: sig_hash.clone(),
                             raw_excerpt: sig.raw_excerpt,
                             first_seen: now,
                             last_seen: now,
@@ -56,6 +70,14 @@ pub async fn run(bus: Arc<EventBus>, knowledge: Arc<RwLock<KnowledgeStore>>) -> 
                         if let Err(e) = store.put_error(&rec) {
                             warn!(error = %e, "failed to insert ErrorRecord");
                         }
+                        // Emit ErrorClassified event after insert
+                        let _ = bus.publish(OrganismEvent::ErrorClassified(ErrorClassifiedEvent {
+                            ts: now,
+                            hash: sig_hash,
+                            tool: sig_tool,
+                            error_kind: sig_kind,
+                            command: term.command_line.clone(),
+                        }));
                     }
                     Err(e) => {
                         warn!(error = %e, "failed to read ErrorRecord");

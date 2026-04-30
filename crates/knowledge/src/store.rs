@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::types::{keys, ErrorRecord, FixRecord, PatternRecord, ProjectMeta};
+use crate::types::{keys, ErrorRecord, FixRecord, PatternRecord, ProjectMeta, SuggestionRecord};
 
 /// File-backed key-value store
 pub struct KnowledgeStore {
@@ -130,5 +130,64 @@ impl KnowledgeStore {
             }
         }
         Ok(out)
+    }
+
+    pub fn get_suggestion(&mut self, hash: &str) -> Result<Option<String>> {
+        match self.get::<SuggestionRecord>(&format!("{}{}", keys::SUGGESTION_PREFIX, hash))? {
+            Some(rec) => Ok(Some(rec.text)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn put_suggestion(&mut self, hash: &str, text: &str) -> Result<()> {
+        let rec = SuggestionRecord {
+            text: text.to_string(),
+            ts: chrono::Utc::now(),
+        };
+        self.put(&format!("{}{}", keys::SUGGESTION_PREFIX, hash), &rec)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_put_and_get_suggestion() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        let hash = "test_hash_123";
+        let text = "Try adding a trait implementation.";
+
+        store.put_suggestion(hash, text).unwrap();
+        let retrieved = store.get_suggestion(hash).unwrap();
+        assert_eq!(retrieved, Some(text.to_string()));
+    }
+
+    #[test]
+    fn test_get_nonexistent_suggestion() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        let retrieved = store.get_suggestion("nonexistent").unwrap();
+        assert_eq!(retrieved, None);
+    }
+
+    #[test]
+    fn test_suggestion_persistence() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        {
+            let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+            store
+                .put_suggestion("persistent_hash", "Persist me!")
+                .unwrap();
+        }
+        // Reopen store
+        {
+            let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+            let retrieved = store.get_suggestion("persistent_hash").unwrap();
+            assert_eq!(retrieved, Some("Persist me!".to_string()));
+        }
     }
 }

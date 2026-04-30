@@ -14,6 +14,7 @@ use tokio::net::UnixStream;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
 
+use organism_knowledge::KnowledgeStore;
 use organism_protocol::Envelope;
 
 // Modules are mounted from the binary crate's src/ via #[path]. Some items
@@ -70,12 +71,14 @@ async fn ipc_status_sleep_wake_log_flow() {
 
     let state = Arc::new(RwLock::new(DaemonState::new()));
     let bus = Arc::new(EventBus::new(64));
+    let knowledge = Arc::new(RwLock::new(KnowledgeStore::open(tmp.path()).unwrap()));
 
     let serve_state = state.clone();
     let serve_bus = bus.clone();
+    let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
     let server_handle = tokio::spawn(async move {
-        let _ = ipc::serve(serve_state, serve_bus, serve_socket).await;
+        let _ = ipc::serve(serve_state, serve_bus, serve_knowledge, serve_socket).await;
     });
 
     // Wait briefly for the listener to bind.

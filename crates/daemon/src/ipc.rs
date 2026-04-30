@@ -11,10 +11,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{debug, error, info, warn};
 
-use organism_protocol::{Envelope, OrganismEvent};
+use organism_protocol::{Envelope, OrganismEvent, SuggestRequest, SuggestResponse};
 
 use crate::daemon::DaemonState;
 use crate::event_bus::EventBus;
+use organism_knowledge::KnowledgeStore;
 use tokio::sync::RwLock;
 
 /// Bind a Unix socket at `socket_path` and serve incoming RPC requests.
@@ -22,6 +23,7 @@ use tokio::sync::RwLock;
 pub async fn serve(
     state: Arc<RwLock<DaemonState>>,
     bus: Arc<EventBus>,
+    knowledge: Arc<RwLock<KnowledgeStore>>,
     socket_path: PathBuf,
 ) -> Result<()> {
     if let Some(parent) = socket_path.parent() {
@@ -44,8 +46,11 @@ pub async fn serve(
             Ok((stream, _addr)) => {
                 let state_clone = state.clone();
                 let bus_clone = bus.clone();
+                let knowledge_clone = knowledge.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(state_clone, bus_clone, stream).await {
+                    if let Err(e) =
+                        handle_connection(state_clone, bus_clone, knowledge_clone, stream).await
+                    {
                         warn!(error = %e, "ipc connection error");
                     }
                 });
@@ -60,6 +65,7 @@ pub async fn serve(
 async fn handle_connection(
     state: Arc<RwLock<DaemonState>>,
     bus: Arc<EventBus>,
+    knowledge: Arc<RwLock<KnowledgeStore>>,
     stream: UnixStream,
 ) -> Result<()> {
     let (read_half, mut write_half) = stream.into_split();
@@ -74,7 +80,7 @@ async fn handle_connection(
     debug!(line = %line.trim(), "ipc request");
 
     let response = match serde_json::from_str::<Envelope>(line.trim()) {
-        Ok(env) => dispatch(state, bus, env).await,
+        Ok(env) => dispatch(state, bus, knowledge, env).await,
         Err(e) => Envelope::error_response("0", &format!("invalid envelope: {}", e)),
     };
 
@@ -85,7 +91,12 @@ async fn handle_connection(
     Ok(())
 }
 
-async fn dispatch(state: Arc<RwLock<DaemonState>>, bus: Arc<EventBus>, req: Envelope) -> Envelope {
+async fn dispatch(
+    state: Arc<RwLock<DaemonState>>,
+    bus: Arc<EventBus>,
+    knowledge: Arc<RwLock<KnowledgeStore>>,
+    req: Envelope,
+) -> Envelope {
     // Extract method from request payload (Envelope::request format).
     let method = req
         .payload
@@ -123,10 +134,46 @@ async fn dispatch(state: Arc<RwLock<DaemonState>>, bus: Arc<EventBus>, req: Enve
                 .collect();
             Envelope::ok_response(&req.id, serde_json::Value::Array(arr))
         }
-        "suggest" => Envelope::ok_response(
-            &req.id,
-            serde_json::json!({"suggestion": "(placeholder) no suggestions yet"}),
-        ),
+        "suggest" => {
+            let params = req
+                .payload
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let req_data: SuggestRequest =
+                serde_json::from_value(params).unwrap_or(SuggestRequest { error_key: None });
+            let mut store = knowledge.write().await;
+
+            // Resolve error key: explicit, or most-recent error by last_seen
+            let key = match req_data.error_key {
+                Some(k) => Some(k),
+                None => store
+                    .list_errors()
+                    .ok()
+                    .and_then(|errs| errs.into_iter().max_by_key(|e| e.last_seen).map(|e| e.hash)),
+            };
+
+            let Some(key) = key else {
+                return Envelope::ok_response(
+                    &req.id,
+                    serde_json::to_value(SuggestResponse {
+                        text: "(no errors recorded yet)".to_string(),
+                        cached: false,
+                    })
+                    .unwrap(),
+                );
+            };
+
+            let (text, cached) = match store.get_suggestion(&key) {
+                Ok(Some(t)) => (t, true),
+                _ => (String::new(), false),
+            };
+
+            Envelope::ok_response(
+                &req.id,
+                serde_json::to_value(SuggestResponse { text, cached }).unwrap(),
+            )
+        }
         "event" => {
             // params should be a serialized OrganismEvent.
             let params = req

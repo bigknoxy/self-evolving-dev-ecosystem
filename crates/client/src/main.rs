@@ -175,8 +175,15 @@ async fn cmd_suggest() -> Result<()> {
         .get("cached")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+
+    let display_text = if text.is_empty() {
+        "(no suggestion yet — try again in a moment)".to_string()
+    } else {
+        text.to_string()
+    };
+
     let cached_tag = if cached { " (cached)" } else { "" };
-    println!("Suggestion:{}\n{}", cached_tag, text);
+    println!("Suggestion:{}\n{}", cached_tag, display_text);
     Ok(())
 }
 
