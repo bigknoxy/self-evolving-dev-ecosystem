@@ -2,9 +2,9 @@ use std::path::PathBuf;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-mod event_bus;
 mod daemon;
 mod error_subscriber;
+mod event_bus;
 mod ipc;
 mod sensors;
 
@@ -52,7 +52,9 @@ async fn main() -> anyhow::Result<()> {
     let watch_bus = daemon.bus.clone();
     let watch_state = daemon.state.clone();
     let file_handle = tokio::spawn(async move {
-        if let Err(e) = sensors::file::watch(watch_bus, watch_state, watch_root, file_shutdown_rx).await {
+        if let Err(e) =
+            sensors::file::watch(watch_bus, watch_state, watch_root, file_shutdown_rx).await
+        {
             tracing::error!(error = %e, "file watcher stopped with error");
         }
     });

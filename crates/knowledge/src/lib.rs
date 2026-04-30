@@ -7,8 +7,8 @@ pub use types::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use chrono::Utc;
+    use tempfile::TempDir;
 
     fn make_store() -> (KnowledgeStore, TempDir) {
         let tmp = TempDir::new().unwrap();
@@ -117,7 +117,9 @@ mod tests {
             source: "manual".to_string(),
         };
         store.put_fix(&fix).unwrap();
-        store.delete(&format!("{}del123", keys::FIX_PREFIX)).unwrap();
+        store
+            .delete(&format!("{}del123", keys::FIX_PREFIX))
+            .unwrap();
         let result = store.get_fix("del123").unwrap();
         assert!(result.is_none());
     }

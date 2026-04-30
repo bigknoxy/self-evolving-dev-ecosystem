@@ -1,15 +1,15 @@
 //! Integration tests for the daemon event bus.
 
-use organism_protocol::{OrganismEvent, TerminalEvent, EventContext};
 use chrono::Utc;
+use organism_protocol::{EventContext, OrganismEvent, TerminalEvent};
 
 // We import internal modules by re-exporting them or using #[path]
 // For simplicity, we replicate the EventBus here for testing.
 // Real integration tests would use the daemon library (convert daemon to lib + bin).
 
 mod event_bus {
-    use tokio::sync::broadcast;
     use organism_protocol::OrganismEvent;
+    use tokio::sync::broadcast;
 
     pub struct EventBus {
         sender: broadcast::Sender<OrganismEvent>,
@@ -51,10 +51,10 @@ async fn test_event_bus_publish_subscribe() {
 
     bus.publish(event);
 
-    let received = tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        rx.recv(),
-    ).await.expect("timeout").expect("recv error");
+    let received = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+        .await
+        .expect("timeout")
+        .expect("recv error");
 
     if let OrganismEvent::Terminal(t) = received {
         assert_eq!(t.command_line, "cargo test");
@@ -95,8 +95,8 @@ async fn test_event_bus_multiple_subscribers() {
 
 #[tokio::test]
 async fn test_knowledge_store_in_tempdir() {
-    use organism_knowledge::{KnowledgeStore, FixRecord};
     use chrono::Utc;
+    use organism_knowledge::{FixRecord, KnowledgeStore};
 
     let tmp = tempfile::TempDir::new().unwrap();
     let mut store = KnowledgeStore::open(tmp.path()).unwrap();

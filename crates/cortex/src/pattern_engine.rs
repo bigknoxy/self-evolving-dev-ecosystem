@@ -1,9 +1,9 @@
 //! Lightweight pattern detection from event streams.
 //! Uses simple frequency counting — no external ML dependencies.
 
-use std::collections::HashMap;
-use organism_knowledge::{PatternRecord};
 use chrono::Utc;
+use organism_knowledge::PatternRecord;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// A simplified event record for pattern mining
@@ -16,10 +16,7 @@ pub struct EventRecord {
 
 /// Detect patterns: when event_type X, action Y is always taken next.
 /// Returns patterns with frequency >= min_frequency.
-pub fn detect_patterns(
-    events: &[EventRecord],
-    min_frequency: u32,
-) -> Vec<PatternRecord> {
+pub fn detect_patterns(events: &[EventRecord], min_frequency: u32) -> Vec<PatternRecord> {
     // Count (event_type, next_description) pairs
     let mut pair_counts: HashMap<(String, String), u32> = HashMap::new();
 

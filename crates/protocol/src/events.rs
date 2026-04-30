@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// Context attached to every event for project identification
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

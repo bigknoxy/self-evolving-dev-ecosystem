@@ -46,11 +46,7 @@ fn first_64(s: &str) -> String {
 
 /// Classify the outcome of a command into an `ErrorSignature`.
 /// Returns `None` if the command succeeded or there's no useful signal.
-pub fn classify(
-    cmd: &str,
-    exit_code: Option<i32>,
-    stderr: Option<&str>,
-) -> Option<ErrorSignature> {
+pub fn classify(cmd: &str, exit_code: Option<i32>, stderr: Option<&str>) -> Option<ErrorSignature> {
     if exit_code == Some(0) {
         return None;
     }
@@ -138,8 +134,16 @@ pub fn classify(
     if let Some(code) = exit_code {
         if code != 0 {
             let kind = format!("exit_{}", code);
-            let raw = excerpt(if stderr_str.is_empty() { cmd } else { stderr_str });
-            let normalized = first_64(if stderr_str.is_empty() { cmd } else { stderr_str });
+            let raw = excerpt(if stderr_str.is_empty() {
+                cmd
+            } else {
+                stderr_str
+            });
+            let normalized = first_64(if stderr_str.is_empty() {
+                cmd
+            } else {
+                stderr_str
+            });
             let hash = hash_signature("unknown", &kind, &normalized);
             return Some(ErrorSignature {
                 tool: "unknown".to_string(),

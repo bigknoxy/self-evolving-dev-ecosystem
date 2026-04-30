@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// A fix record: known error → patch solution
 #[derive(Debug, Clone, Serialize, Deserialize)]

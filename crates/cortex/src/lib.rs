@@ -9,7 +9,7 @@ pub use pattern_engine::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pattern_engine::{detect_patterns, EventRecord, calculate_confidence};
+    use pattern_engine::{calculate_confidence, detect_patterns, EventRecord};
 
     fn make_event(project: &str, etype: &str, desc: &str) -> EventRecord {
         EventRecord {
@@ -30,9 +30,9 @@ mod tests {
         let patterns = detect_patterns(&events, 2);
         // The "build_error → try cargo fix" pair appears 2 times in windows
         assert!(!patterns.is_empty());
-        let found = patterns.iter().any(|p|
-            p.trigger == "build_error" && p.action == "try cargo fix"
-        );
+        let found = patterns
+            .iter()
+            .any(|p| p.trigger == "build_error" && p.action == "try cargo fix");
         assert!(found, "Expected build_error pattern");
     }
 

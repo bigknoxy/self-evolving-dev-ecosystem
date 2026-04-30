@@ -1,7 +1,7 @@
+use crate::events::OrganismEvent;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
-use crate::events::OrganismEvent;
 
 /// Protocol version. Increment when breaking changes are made.
 pub const PROTOCOL_VERSION: u8 = 1;
@@ -36,25 +36,22 @@ impl Envelope {
     }
 
     pub fn ok_response(request_id: &str, result: serde_json::Value) -> Self {
-        let mut env = Self::new(MessageType::Response, serde_json::json!({ "result": result }));
-        env.id = request_id.to_string();
-        env
-    }
-
-    pub fn error_response(request_id: &str, message: &str) -> Self {
         let mut env = Self::new(
-            MessageType::Error,
-            serde_json::json!({ "error": message }),
+            MessageType::Response,
+            serde_json::json!({ "result": result }),
         );
         env.id = request_id.to_string();
         env
     }
 
+    pub fn error_response(request_id: &str, message: &str) -> Self {
+        let mut env = Self::new(MessageType::Error, serde_json::json!({ "error": message }));
+        env.id = request_id.to_string();
+        env
+    }
+
     pub fn event(event: &OrganismEvent) -> anyhow::Result<Self> {
-        Ok(Self::new(
-            MessageType::Event,
-            serde_json::to_value(event)?,
-        ))
+        Ok(Self::new(MessageType::Event, serde_json::to_value(event)?))
     }
 }
 

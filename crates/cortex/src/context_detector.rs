@@ -1,7 +1,7 @@
 //! Detects the current project context from events.
 
-use std::path::Path;
 use organism_knowledge::ProjectMeta;
+use std::path::Path;
 
 /// Stack indicators found in the filesystem
 pub struct StackIndicator {
@@ -10,12 +10,30 @@ pub struct StackIndicator {
 }
 
 const STACK_INDICATORS: &[StackIndicator] = &[
-    StackIndicator { file: "package.json", stack: "JavaScript" },
-    StackIndicator { file: "Cargo.toml", stack: "Rust" },
-    StackIndicator { file: "pyproject.toml", stack: "Python" },
-    StackIndicator { file: "go.mod", stack: "Go" },
-    StackIndicator { file: "Gemfile", stack: "Ruby" },
-    StackIndicator { file: "pom.xml", stack: "Java" },
+    StackIndicator {
+        file: "package.json",
+        stack: "JavaScript",
+    },
+    StackIndicator {
+        file: "Cargo.toml",
+        stack: "Rust",
+    },
+    StackIndicator {
+        file: "pyproject.toml",
+        stack: "Python",
+    },
+    StackIndicator {
+        file: "go.mod",
+        stack: "Go",
+    },
+    StackIndicator {
+        file: "Gemfile",
+        stack: "Ruby",
+    },
+    StackIndicator {
+        file: "pom.xml",
+        stack: "Java",
+    },
 ];
 
 /// Detect the stack for a given project directory

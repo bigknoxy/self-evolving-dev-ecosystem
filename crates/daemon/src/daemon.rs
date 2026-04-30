@@ -1,9 +1,9 @@
 //! Core daemon: lifecycle management, sensor orchestration, event routing.
 
+use chrono::{DateTime, Utc};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
-use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 

@@ -17,10 +17,7 @@ use organism_protocol::OrganismEvent;
 
 use crate::event_bus::EventBus;
 
-pub async fn run(
-    bus: Arc<EventBus>,
-    knowledge: Arc<RwLock<KnowledgeStore>>,
-) -> Result<()> {
+pub async fn run(bus: Arc<EventBus>, knowledge: Arc<RwLock<KnowledgeStore>>) -> Result<()> {
     let mut rx = bus.subscribe();
     loop {
         match rx.recv().await {

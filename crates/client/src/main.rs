@@ -130,9 +130,18 @@ async fn cmd_emit_terminal(args: &[String]) -> Result<()> {
 async fn cmd_status() -> Result<()> {
     let resp = send_request("status", serde_json::json!({})).await?;
     let result = resp.payload.get("result").unwrap_or(&resp.payload);
-    let uptime = result.get("uptime_secs").and_then(|v| v.as_u64()).unwrap_or(0);
-    let awake = result.get("awake").and_then(|v| v.as_bool()).unwrap_or(false);
-    let count = result.get("event_count").and_then(|v| v.as_u64()).unwrap_or(0);
+    let uptime = result
+        .get("uptime_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let awake = result
+        .get("awake")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let count = result
+        .get("event_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     println!("Organism Status");
     println!("  awake:        {}", awake);
     println!("  uptime_secs:  {}", uptime);

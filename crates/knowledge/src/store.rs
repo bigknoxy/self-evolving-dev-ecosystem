@@ -2,13 +2,13 @@
 //! Simple and portable — no native dependencies.
 //! Suitable for Level 0-2 capability. Swap for RocksDB at Level 3+.
 
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 
-use crate::types::{ErrorRecord, FixRecord, PatternRecord, ProjectMeta, keys};
+use crate::types::{keys, ErrorRecord, FixRecord, PatternRecord, ProjectMeta};
 
 /// File-backed key-value store
 pub struct KnowledgeStore {
@@ -41,8 +41,7 @@ impl KnowledgeStore {
         if !path.exists() {
             return Ok(None);
         }
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("Reading {:?}", path))?;
+        let content = fs::read_to_string(&path).with_context(|| format!("Reading {:?}", path))?;
         self.cache.insert(key.to_string(), content.clone());
         Ok(Some(serde_json::from_str(&content)?))
     }
@@ -50,8 +49,7 @@ impl KnowledgeStore {
     pub fn put<T: Serialize>(&mut self, key: &str, value: &T) -> Result<()> {
         let content = serde_json::to_string_pretty(value)?;
         let path = self.key_to_path(key);
-        fs::write(&path, &content)
-            .with_context(|| format!("Writing {:?}", path))?;
+        fs::write(&path, &content).with_context(|| format!("Writing {:?}", path))?;
         self.cache.insert(key.to_string(), content);
         Ok(())
     }
@@ -89,7 +87,10 @@ impl KnowledgeStore {
     }
 
     pub fn put_fix(&mut self, record: &FixRecord) -> Result<()> {
-        self.put(&format!("{}{}", keys::FIX_PREFIX, record.signature_hash), record)
+        self.put(
+            &format!("{}{}", keys::FIX_PREFIX, record.signature_hash),
+            record,
+        )
     }
 
     pub fn get_pattern(&mut self, id: &str) -> Result<Option<PatternRecord>> {

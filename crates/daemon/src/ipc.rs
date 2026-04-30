@@ -85,11 +85,7 @@ async fn handle_connection(
     Ok(())
 }
 
-async fn dispatch(
-    state: Arc<RwLock<DaemonState>>,
-    bus: Arc<EventBus>,
-    req: Envelope,
-) -> Envelope {
+async fn dispatch(state: Arc<RwLock<DaemonState>>, bus: Arc<EventBus>, req: Envelope) -> Envelope {
     // Extract method from request payload (Envelope::request format).
     let method = req
         .payload
@@ -127,15 +123,17 @@ async fn dispatch(
                 .collect();
             Envelope::ok_response(&req.id, serde_json::Value::Array(arr))
         }
-        "suggest" => {
-            Envelope::ok_response(
-                &req.id,
-                serde_json::json!({"suggestion": "(placeholder) no suggestions yet"}),
-            )
-        }
+        "suggest" => Envelope::ok_response(
+            &req.id,
+            serde_json::json!({"suggestion": "(placeholder) no suggestions yet"}),
+        ),
         "event" => {
             // params should be a serialized OrganismEvent.
-            let params = req.payload.get("params").cloned().unwrap_or(serde_json::Value::Null);
+            let params = req
+                .payload
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let evt: OrganismEvent = match serde_json::from_value(params) {
                 Ok(e) => e,
                 Err(e) => {
@@ -161,17 +159,15 @@ async fn dispatch(
                 s.record_event(format!("{:?}", evt));
             }
             let _ = bus.publish(evt);
-            Envelope::ok_response(
-                &req.id,
-                serde_json::json!({"ok": true, "recorded": true}),
-            )
+            Envelope::ok_response(&req.id, serde_json::json!({"ok": true, "recorded": true}))
         }
-        _ => {
-            Envelope::error_response(
-                &req.id,
-                &format!("unknown method: {}", if method.is_empty() { "<none>" } else { &method }),
-            )
-        }
+        _ => Envelope::error_response(
+            &req.id,
+            &format!(
+                "unknown method: {}",
+                if method.is_empty() { "<none>" } else { &method }
+            ),
+        ),
     }
 }
 

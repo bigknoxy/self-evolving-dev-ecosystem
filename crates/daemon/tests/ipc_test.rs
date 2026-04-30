@@ -106,7 +106,11 @@ async fn ipc_status_sleep_wake_log_flow() {
     // 5. Log returns an array payload
     let resp = round_trip(&socket_path, "log").await;
     let result = resp.payload.get("result").expect("result field");
-    assert!(result.is_array(), "log result should be an array, got {:?}", result);
+    assert!(
+        result.is_array(),
+        "log result should be an array, got {:?}",
+        result
+    );
 
     server_handle.abort();
 }

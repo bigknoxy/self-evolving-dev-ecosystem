@@ -1,8 +1,8 @@
 //! Async pub/sub event bus for the daemon.
 //! Producers push events; subscribers receive them via broadcast channels.
 
-use tokio::sync::broadcast;
 use organism_protocol::OrganismEvent;
+use tokio::sync::broadcast;
 
 pub struct EventBus {
     sender: broadcast::Sender<OrganismEvent>,
