@@ -1,10 +1,12 @@
 pub mod context_detector;
 pub mod error_classifier;
 pub mod pattern_engine;
+pub mod suggest;
 
 pub use context_detector::*;
 pub use error_classifier::{classify, ErrorSignature};
 pub use pattern_engine::*;
+pub use suggest::{suggest_for_error, LlmClient};
 
 #[cfg(test)]
 mod tests {
