@@ -1,5 +1,9 @@
 # Self-Evolving Dev Ecosystem (Organism)
 
+Learns from your dev failures and errors without leaving your machine. Daemon watches
+your terminal and files, classifies what goes wrong, builds a personal knowledge store,
+and over time can suggest fixes — no cloud, no telemetry.
+
 ## What it is
 
 Local Rust daemon that watches your dev activity — terminal commands, file
@@ -7,6 +11,34 @@ changes — classifies failures, and writes them to a personal knowledge store
 under `~/.organism/`. Self-evolving because the dataset is the substrate for
 later layers: L3 plugs in Ollama for suggestions, L4 grows it into a digital
 twin. Local-first, no network.
+
+## Quick Start
+
+1. **Install** (requires `git` and `cargo` on PATH):
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/bigknoxy/self-evolving-dev-ecosystem/main/scripts/quick-install.sh | bash
+   ```
+
+2. **Open a new shell** so the zsh hook and PATH setup take effect:
+   ```bash
+   exec zsh
+   ```
+
+3. **Verify the daemon is running**:
+   ```bash
+   organism-cli status
+   ```
+
+4. **Generate an error event** by running a command that fails (e.g., in a broken project):
+   ```bash
+   cargo build
+   ```
+   The daemon catches the error and stores it.
+
+5. **Get a suggestion** (requires `ollama serve` running and `OLLAMA_ENABLED=1`):
+   ```bash
+   OLLAMA_ENABLED=1 organism-cli suggest
+   ```
 
 ## Architecture
 
@@ -30,7 +62,7 @@ twin. Local-first, no network.
 | L0 Observer | Event bus, knowledge store, pattern engine, CLI skeleton | DONE |
 | L1 Sensor wiring | Bidirectional Unix socket IPC, zsh hook → `emit-terminal` | DONE |
 | L2 Watcher + classifier + install | `notify` file watcher, regex error classifier, `install.sh` + LaunchAgent | DONE |
-| L3 Ollama integration | Local LLM suggestions over the dataset | PLANNED |
+| L3 Ollama integration | Ollama HTTP client, `suggest` module, daemon subscriber, CLI `suggest` command (gated by `OLLAMA_ENABLED=1`) | DONE |
 | L4 Digital twin | Codes alongside you in your style | PLANNED |
 
 ## Install
@@ -88,9 +120,15 @@ organism-cli emit-terminal "cargo build" \
   --duration-ms 1820 \
   --stderr "error[E0599]: no method named foo"
 
-# context-aware suggestion stub (L3 will fill this in)
-organism-cli suggest
+# context-aware suggestion (requires L3 + Ollama)
+OLLAMA_ENABLED=1 organism-cli suggest
 ```
+
+Suggestion environment variables:
+
+- `OLLAMA_ENABLED` — set to `1` to enable suggestions (default: `0` / disabled)
+- `OLLAMA_BASE_URL` — Ollama HTTP endpoint (default: `http://127.0.0.1:11434`)
+- `OLLAMA_MODEL` — model to use (default: `qwen2.5-coder:7b`)
 
 Notes:
 
@@ -103,6 +141,11 @@ Notes:
 Solo devs who want their tooling to learn from their friction. Not a team
 product. No telemetry, no cloud. macOS-first install path; daemon runs
 anywhere Tokio does.
+
+Not for you if:
+- Your team needs shared error/pattern data across developers
+- You want to sync knowledge to the cloud
+- You use Windows (daemon runs on Linux/macOS only)
 
 ## Uninstall
 
@@ -130,9 +173,8 @@ Per-task notes and gotchas in `LEARNINGS.md`.
 
 ## Roadmap
 
-L3+ scope (deliberately out of scope for L0–L2):
+L4+ scope (deliberately out of scope for L0–L3):
 
-- Ollama integration for local LLM suggestions over the knowledge store
 - Real digital-twin code generation in user style
 - Inline suggestion UI / editor surface
 - Effector framework — daemon takes actions (format, patch, scan), not just observes
