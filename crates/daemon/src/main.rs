@@ -40,9 +40,10 @@ async fn main() -> anyhow::Result<()> {
     let socket_path = ipc::socket_path_for(&data_dir);
     let ipc_state = daemon.state.clone();
     let ipc_bus = daemon.bus.clone();
+    let ipc_knowledge = daemon.knowledge.clone();
     let ipc_socket = socket_path.clone();
     tokio::spawn(async move {
-        if let Err(e) = ipc::serve(ipc_state, ipc_bus, ipc_socket).await {
+        if let Err(e) = ipc::serve(ipc_state, ipc_bus, ipc_knowledge, ipc_socket).await {
             tracing::error!(error = %e, "ipc server stopped");
         }
     });

@@ -57,6 +57,13 @@ pub struct ErrorRecord {
     pub last_command: String,
 }
 
+/// An LLM-generated suggestion for an error, cached on disk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuggestionRecord {
+    pub text: String,
+    pub ts: DateTime<Utc>,
+}
+
 /// Key prefixes for the key-value store
 pub mod keys {
     pub const FIX_PREFIX: &str = "fix:";
@@ -64,4 +71,5 @@ pub mod keys {
     pub const PROJECT_PREFIX: &str = "proj:";
     pub const STATS_PREFIX: &str = "stats:";
     pub const ERROR_PREFIX: &str = "error:";
+    pub const SUGGESTION_PREFIX: &str = "suggestion:";
 }
