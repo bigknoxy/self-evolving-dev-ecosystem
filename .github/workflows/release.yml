@@ -1,0 +1,42 @@
+name: Release
+on:
+  push:
+    tags: ['v*.*.*']
+
+jobs:
+  build:
+    name: build (${{ matrix.slug }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            slug: linux-x86_64
+          - os: macos-latest
+            slug: darwin-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --workspace --locked
+      - name: Package tarball
+        env:
+          VERSION: ${{ github.ref_name }}
+          SLUG: ${{ matrix.slug }}
+        run: |
+          set -euo pipefail
+          STAGE="organism-${VERSION}-${SLUG}"
+          mkdir -p "dist/${STAGE}"
+          cp target/release/organism "dist/${STAGE}/organism-daemon"
+          cp target/release/organism-cli "dist/${STAGE}/organism-cli"
+          cp -R scripts "dist/${STAGE}/scripts"
+          cp README.md LICENSE "dist/${STAGE}/"
+          tar -C dist -czf "dist/${STAGE}.tar.gz" "${STAGE}"
+          ls -la dist/
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

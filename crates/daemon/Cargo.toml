@@ -1,0 +1,28 @@
+[package]
+name = "organism-daemon"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "organism"
+path = "src/main.rs"
+
+[dependencies]
+organism-protocol = { path = "../protocol" }
+organism-knowledge = { path = "../knowledge" }
+organism-cortex = { path = "../cortex" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+notify = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.10"
+tokio = { workspace = true }
+chrono = { workspace = true }

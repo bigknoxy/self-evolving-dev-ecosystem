@@ -1,0 +1,18 @@
+[package]
+name = "organism-client"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "organism-cli"
+path = "src/main.rs"
+
+[dependencies]
+organism-protocol = { path = "../protocol" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }

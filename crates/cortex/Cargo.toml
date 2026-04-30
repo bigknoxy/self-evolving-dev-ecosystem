@@ -1,0 +1,15 @@
+[package]
+name = "organism-cortex"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+organism-protocol = { path = "../protocol" }
+organism-knowledge = { path = "../knowledge" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+regex = { workspace = true }
