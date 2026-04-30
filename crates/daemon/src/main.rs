@@ -6,6 +6,7 @@ mod daemon;
 mod error_subscriber;
 mod event_bus;
 mod ipc;
+mod ollama_subscriber;
 mod sensors;
 
 use daemon::Daemon;
@@ -66,6 +67,15 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         if let Err(e) = error_subscriber::run(err_bus, err_knowledge).await {
             tracing::error!(error = %e, "error_subscriber stopped with error");
+        }
+    });
+
+    // Spawn Ollama subscriber: generates LLM suggestions for errors (if enabled).
+    let ollama_bus = daemon.bus.clone();
+    let ollama_knowledge = daemon.knowledge.clone();
+    tokio::spawn(async move {
+        if let Err(e) = ollama_subscriber::run(ollama_bus, ollama_knowledge).await {
+            tracing::error!(error = %e, "ollama_subscriber stopped with error");
         }
     });
 

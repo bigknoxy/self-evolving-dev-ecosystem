@@ -11,6 +11,7 @@ path = "src/main.rs"
 organism-protocol = { path = "../protocol" }
 organism-knowledge = { path = "../knowledge" }
 organism-cortex = { path = "../cortex" }
+organism-ollama = { path = "../ollama" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -26,3 +27,5 @@ notify = { workspace = true }
 tempfile = "3.10"
 tokio = { workspace = true }
 chrono = { workspace = true }
+wiremock = "0.6"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
