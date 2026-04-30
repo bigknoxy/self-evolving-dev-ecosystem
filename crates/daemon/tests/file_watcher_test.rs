@@ -7,6 +7,8 @@ use tempfile::TempDir;
 use tokio::sync::{oneshot, RwLock};
 use tokio::time::timeout;
 
+#[cfg(not(target_os = "macos"))]
+use organism_protocol::FileEventType;
 use organism_protocol::OrganismEvent;
 
 #[allow(dead_code)]
