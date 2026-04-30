@@ -7,7 +7,7 @@ use tempfile::TempDir;
 use tokio::sync::{oneshot, RwLock};
 use tokio::time::timeout;
 
-use organism_protocol::{FileEventType, OrganismEvent};
+use organism_protocol::OrganismEvent;
 
 #[allow(dead_code)]
 #[path = "../src/event_bus.rs"]
@@ -30,6 +30,7 @@ fn make_bus_and_state() -> (Arc<EventBus>, Arc<RwLock<DaemonState>>) {
     (bus, state)
 }
 
+#[allow(dead_code)]
 async fn next_file_event(
     rx: &mut tokio::sync::broadcast::Receiver<OrganismEvent>,
     deadline: Duration,

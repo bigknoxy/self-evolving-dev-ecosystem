@@ -31,7 +31,6 @@ pub async fn suggest_for_error<C: LlmClient>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use chrono::Utc;
     use organism_knowledge::{ErrorRecord, KnowledgeStore};
     use tempfile::TempDir;
