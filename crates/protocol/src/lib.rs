@@ -2,11 +2,12 @@ pub mod events;
 pub mod messages;
 
 pub use events::*;
-pub use messages::*;
+pub use messages::{Envelope, MessageType, StatusResponse, SuggestRequest, SuggestResponse};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::messages::PROTOCOL_VERSION;
 
     #[test]
     fn test_envelope_request_roundtrip() {
@@ -74,5 +75,39 @@ mod tests {
         let env = Envelope::ok_response("req-123", serde_json::json!({"status": "ok"}));
         assert_eq!(env.id, "req-123");
         assert_eq!(env.msg_type, MessageType::Response);
+    }
+
+    #[test]
+    fn test_suggest_request_roundtrip() {
+        let req = SuggestRequest {
+            error_key: Some("hash123".to_string()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: SuggestRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.error_key, Some("hash123".to_string()));
+    }
+
+    #[test]
+    fn test_suggest_response_roundtrip() {
+        let resp = SuggestResponse {
+            text: "Try running cargo fix".to_string(),
+            cached: false,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: SuggestResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.text, "Try running cargo fix");
+        assert!(!back.cached);
+    }
+
+    #[test]
+    fn test_suggest_response_cached() {
+        let resp = SuggestResponse {
+            text: "Solution from cache".to_string(),
+            cached: true,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"cached\":true"));
+        let back: SuggestResponse = serde_json::from_str(&json).unwrap();
+        assert!(back.cached);
     }
 }
