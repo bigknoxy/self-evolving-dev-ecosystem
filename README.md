@@ -101,6 +101,32 @@ Caveats:
 - Shell hook is zsh-only.
 - LaunchAgent step is macOS-only. Daemon itself runs on Linux; you supply your own service unit.
 
+### Environment Overrides (`~/.organism/env`)
+
+The LaunchAgent plist is generated with default environment variables. To customize them before install, create `~/.organism/env` with `KEY=VAL` entries (one per line). Comment lines (starting with `#`) and blank lines are ignored.
+
+**Default variables:**
+- `OLLAMA_ENABLED=1` — enable Ollama-based suggestions
+- `OLLAMA_BASE_URL=http://127.0.0.1:11434` — local Ollama server
+- `OLLAMA_MODEL=qwen2.5-coder:7b` — default model for suggestions
+- `ORGANISM_HOME=$HOME/.organism` — knowledge store location
+- `PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin` — daemon PATH
+- `RUST_LOG=info` — log level
+
+**Example override (`~/.organism/env`):**
+```bash
+# Use a different Ollama model
+OLLAMA_MODEL=llama3:8b
+
+# Disable Ollama integration (no suggestions)
+OLLAMA_ENABLED=0
+
+# Verbose logging
+RUST_LOG=debug
+```
+
+After editing `~/.organism/env`, rerun `bash scripts/install.sh` to regenerate the plist. Invalid key names (not matching `^[A-Z_][A-Z0-9_]*$`) are skipped with a warning.
+
 ## Usage
 
 ```bash
