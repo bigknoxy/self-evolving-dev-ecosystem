@@ -3,8 +3,8 @@ pub mod messages;
 
 pub use events::*;
 pub use messages::{
-    ApplyMode, ApplyRequest, ApplyResponse, Envelope, MessageType, StatusResponse, SuggestRequest,
-    SuggestResponse,
+    ApplyMode, ApplyRequest, ApplyResponse, Envelope, ErrorSummaryWire, ErrorsRequest,
+    ErrorsResponse, MessageType, StatusResponse, SuggestRequest, SuggestResponse,
 };
 
 #[cfg(test)]

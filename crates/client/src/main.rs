@@ -23,6 +23,7 @@ async fn main() -> ExitCode {
         "status" => cmd_status().await,
         "suggest" => cmd_suggest().await,
         "apply" => cmd_apply(&args[2..]).await,
+        "errors" => cmd_errors(&args[2..]).await,
         "log" => cmd_log().await,
         "sleep" => cmd_sleep().await,
         "wake" => cmd_wake().await,
@@ -53,12 +54,50 @@ fn cmd_help() {
     println!("  suggest   Request a suggestion for current directory");
     println!("  apply <ERROR_KEY> [--stage]");
     println!("            Materialize a cached suggestion (--stage writes patch / clipboards cmd)");
+    println!("  errors [--limit N] [--json]");
+    println!("            List recent errors (default 20, --json for raw JSON output)");
     println!("  log       Show recent daemon activity");
     println!("  sleep     Pause all daemon activity");
     println!("  wake      Resume daemon activity");
     println!("  emit-terminal <cmd> [--exit-code N] [--cwd PATH] [--duration-ms M] [--stderr STR]");
     println!("            Inject a terminal event into the daemon (used by shell hook)");
     println!("  help      Show this help");
+}
+
+/// Format a timestamp as human-readable age relative to now.
+/// Returns strings like "3m", "1h", "2d", "59s".
+fn format_age(last_seen_rfc3339: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(last_seen_rfc3339) {
+        Ok(dt) => {
+            let dt_utc = dt.with_timezone(&chrono::Utc);
+            let now = chrono::Utc::now();
+            let duration = now.signed_duration_since(dt_utc);
+            let secs = duration.num_seconds();
+
+            if secs < 0 {
+                // Future timestamp (shouldn't happen)
+                "0s".to_string()
+            } else if secs < 60 {
+                format!("{}s", secs)
+            } else if secs < 3600 {
+                // Minutes
+                let mins = secs / 60;
+                format!("{}m", mins)
+            } else if secs < 86400 {
+                // Hours
+                let hrs = secs / 3600;
+                format!("{}h", hrs)
+            } else {
+                // Days
+                let days = secs / 86400;
+                format!("{}d", days)
+            }
+        }
+        Err(_) => {
+            // Could not parse; just return as-is
+            "?".to_string()
+        }
+    }
 }
 
 /// Parse emit-terminal CLI args and build the corresponding TerminalEvent.
@@ -244,6 +283,90 @@ async fn cmd_apply(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+async fn cmd_errors(args: &[String]) -> Result<()> {
+    let mut limit: Option<usize> = None;
+    let mut json_output = false;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--limit" => {
+                let v = args.get(i + 1).context("--limit requires a value")?;
+                limit = Some(v.parse().context("--limit: not an integer")?);
+                i += 2;
+            }
+            "--json" => {
+                json_output = true;
+                i += 1;
+            }
+            other => anyhow::bail!("unknown flag in errors: {}", other),
+        }
+    }
+
+    let resp = send_request("errors", serde_json::json!({ "limit": limit })).await?;
+
+    if let Some(err) = resp.payload.get("error").and_then(|v| v.as_str()) {
+        anyhow::bail!("daemon error: {}", err);
+    }
+
+    let result = resp.payload.get("result").unwrap_or(&resp.payload);
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(result)?);
+        return Ok(());
+    }
+
+    // Human-readable format
+    if let Some(items) = result.get("items").and_then(|v| v.as_array()) {
+        if items.is_empty() {
+            println!("(no errors recorded yet)");
+            return Ok(());
+        }
+
+        // Print header
+        println!(
+            "{:<10} {:<9} {:<6} {:<5} {:<30}",
+            "HASH", "AGE", "OCC", "SUG", "COMMAND"
+        );
+        println!("{}", "-".repeat(70));
+
+        for item in items {
+            let hash = item.get("hash").and_then(|v| v.as_str()).unwrap_or("?");
+            let command = item.get("command").and_then(|v| v.as_str()).unwrap_or("?");
+            let occurrences = item
+                .get("occurrences")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let has_suggestion = item
+                .get("has_suggestion")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let last_seen = item
+                .get("last_seen")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+
+            let age = format_age(last_seen);
+            let sug_tag = if has_suggestion { "yes" } else { "no" };
+            let hash_short = if hash.len() > 10 { &hash[..10] } else { hash };
+            let cmd_short = if command.len() > 30 {
+                format!("{}...", &command[..27])
+            } else {
+                command.to_string()
+            };
+
+            println!(
+                "{:<10} {:<9} {:<6} {:<5} {:<30}",
+                hash_short, age, occurrences, sug_tag, cmd_short
+            );
+        }
+    } else {
+        println!("{}", serde_json::to_string_pretty(result)?);
+    }
+
+    Ok(())
+}
+
 async fn cmd_log() -> Result<()> {
     let resp = send_request("log", serde_json::json!({})).await?;
     let result = resp.payload.get("result").unwrap_or(&resp.payload);
@@ -426,5 +549,60 @@ mod tests {
         let args = vec![s("ls"), s("--stderr")];
         let err = build_terminal_event(&args).unwrap_err();
         assert!(err.to_string().contains("--stderr requires a value"));
+    }
+
+    #[test]
+    fn format_age_seconds() {
+        let now = chrono::Utc::now();
+        let thirty_secs_ago = (now - chrono::Duration::seconds(30))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let age = format_age(&thirty_secs_ago);
+        assert!(age.ends_with("s"), "age={}", age);
+        assert!(age.starts_with("3"), "age={}", age);
+    }
+
+    #[test]
+    fn format_age_minutes() {
+        let now = chrono::Utc::now();
+        let three_mins_ago =
+            (now - chrono::Duration::minutes(3)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let age = format_age(&three_mins_ago);
+        assert_eq!(age, "3m");
+    }
+
+    #[test]
+    fn format_age_hours() {
+        let now = chrono::Utc::now();
+        let one_hour_ago =
+            (now - chrono::Duration::hours(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let age = format_age(&one_hour_ago);
+        assert_eq!(age, "1h");
+    }
+
+    #[test]
+    fn format_age_days() {
+        let now = chrono::Utc::now();
+        let two_days_ago =
+            (now - chrono::Duration::days(2)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let age = format_age(&two_days_ago);
+        assert_eq!(age, "2d");
+    }
+
+    #[test]
+    fn format_age_boundary_60_seconds() {
+        let now = chrono::Utc::now();
+        let sixty_secs_ago = (now - chrono::Duration::seconds(60))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let age = format_age(&sixty_secs_ago);
+        assert_eq!(age, "1m");
+    }
+
+    #[test]
+    fn format_age_boundary_59_seconds() {
+        let now = chrono::Utc::now();
+        let fifty_nine_secs_ago = (now - chrono::Duration::seconds(59))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let age = format_age(&fifty_nine_secs_ago);
+        assert_eq!(age, "59s");
     }
 }

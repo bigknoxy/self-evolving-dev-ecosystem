@@ -10,6 +10,16 @@ use std::path::{Path, PathBuf};
 
 use crate::types::{keys, ErrorRecord, FixRecord, PatternRecord, ProjectMeta, SuggestionRecord};
 
+/// Summary of an error for listing and display
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorSummary {
+    pub hash: String,
+    pub last_command: String,
+    pub occurrences: u32,
+    pub last_seen: chrono::DateTime<chrono::Utc>,
+    pub has_suggestion: bool,
+}
+
 /// File-backed key-value store
 pub struct KnowledgeStore {
     data_dir: PathBuf,
@@ -132,6 +142,61 @@ impl KnowledgeStore {
         Ok(out)
     }
 
+    pub fn list_errors_summary(&self, limit: usize) -> Result<Vec<ErrorSummary>> {
+        let mut summaries = Vec::new();
+
+        // Read directory and find all error_*.json files
+        for entry in fs::read_dir(&self.data_dir)? {
+            let entry = entry?;
+            let fname = entry.file_name().to_string_lossy().into_owned();
+
+            // Match error_<hash>.json pattern
+            if fname.starts_with("error_") && fname.ends_with(".json") {
+                let path = entry.path();
+
+                // Try to parse the error record; skip corrupt files
+                match fs::read_to_string(&path) {
+                    Ok(content) => {
+                        match serde_json::from_str::<ErrorRecord>(&content) {
+                            Ok(record) => {
+                                // Check if suggestion exists
+                                let suggestion_key =
+                                    format!("{}{}", keys::SUGGESTION_PREFIX, record.hash);
+                                let safe_sug_key = suggestion_key.replace([':', '/'], "_");
+                                let sug_path = self.data_dir.join(format!("{}.json", safe_sug_key));
+                                let has_suggestion = sug_path.exists();
+
+                                summaries.push(ErrorSummary {
+                                    hash: record.hash,
+                                    last_command: record.last_command,
+                                    occurrences: record.occurrences as u32,
+                                    last_seen: record.last_seen,
+                                    has_suggestion,
+                                });
+                            }
+                            Err(_) => {
+                                // Skip corrupt JSON
+                                continue;
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Skip files that can't be read
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Sort by last_seen DESC
+        summaries.sort_by_key(|s| std::cmp::Reverse(s.last_seen));
+
+        // Apply limit
+        summaries.truncate(limit);
+
+        Ok(summaries)
+    }
+
     pub fn get_suggestion(&mut self, hash: &str) -> Result<Option<String>> {
         match self.get::<SuggestionRecord>(&format!("{}{}", keys::SUGGESTION_PREFIX, hash))? {
             Some(rec) => Ok(Some(rec.text)),
@@ -229,5 +294,147 @@ mod tests {
             let retrieved = store.get_suggestion("persistent_hash").unwrap();
             assert_eq!(retrieved, Some("Persist me!".to_string()));
         }
+    }
+
+    #[test]
+    fn test_list_errors_empty() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = KnowledgeStore::open(tmp.path()).unwrap();
+        let summaries = store.list_errors_summary(20).unwrap();
+        assert_eq!(summaries.len(), 0);
+    }
+
+    #[test]
+    fn test_list_errors_sorted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        // Create 3 errors with different last_seen times
+        let now = chrono::Utc::now();
+        let err1 = ErrorRecord {
+            tool: "rustc".into(),
+            kind: "E0599".into(),
+            hash: "hash1".into(),
+            raw_excerpt: "error1".into(),
+            first_seen: now - chrono::Duration::hours(3),
+            last_seen: now - chrono::Duration::hours(3),
+            occurrences: 1,
+            last_command: "cargo build".into(),
+        };
+        let err2 = ErrorRecord {
+            tool: "rustc".into(),
+            kind: "E0599".into(),
+            hash: "hash2".into(),
+            raw_excerpt: "error2".into(),
+            first_seen: now - chrono::Duration::hours(1),
+            last_seen: now - chrono::Duration::hours(1),
+            occurrences: 2,
+            last_command: "cargo test".into(),
+        };
+        let err3 = ErrorRecord {
+            tool: "rustc".into(),
+            kind: "E0599".into(),
+            hash: "hash3".into(),
+            raw_excerpt: "error3".into(),
+            first_seen: now - chrono::Duration::minutes(30),
+            last_seen: now - chrono::Duration::minutes(30),
+            occurrences: 3,
+            last_command: "cargo run".into(),
+        };
+
+        store.put_error(&err1).unwrap();
+        store.put_error(&err2).unwrap();
+        store.put_error(&err3).unwrap();
+
+        let summaries = store.list_errors_summary(20).unwrap();
+        assert_eq!(summaries.len(), 3);
+        // Should be sorted by last_seen DESC (most recent first)
+        assert_eq!(summaries[0].hash, "hash3");
+        assert_eq!(summaries[1].hash, "hash2");
+        assert_eq!(summaries[2].hash, "hash1");
+    }
+
+    #[test]
+    fn test_list_errors_limit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        let now = chrono::Utc::now();
+        for i in 0..5 {
+            let err = ErrorRecord {
+                tool: "rustc".into(),
+                kind: "E0599".into(),
+                hash: format!("hash{}", i),
+                raw_excerpt: format!("error{}", i),
+                first_seen: now,
+                last_seen: now - chrono::Duration::seconds(i as i64),
+                occurrences: 1,
+                last_command: "cargo build".into(),
+            };
+            store.put_error(&err).unwrap();
+        }
+
+        let summaries = store.list_errors_summary(2).unwrap();
+        assert_eq!(summaries.len(), 2);
+    }
+
+    #[test]
+    fn test_list_errors_has_suggestion() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        let now = chrono::Utc::now();
+        let err = ErrorRecord {
+            tool: "rustc".into(),
+            kind: "E0599".into(),
+            hash: "hashwithreason".into(),
+            raw_excerpt: "error".into(),
+            first_seen: now,
+            last_seen: now,
+            occurrences: 1,
+            last_command: "cargo build".into(),
+        };
+        store.put_error(&err).unwrap();
+
+        // Before adding suggestion
+        let summaries = store.list_errors_summary(20).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert!(!summaries[0].has_suggestion);
+
+        // After adding suggestion
+        store
+            .put_suggestion("hashwithreason", "do the thing")
+            .unwrap();
+        let summaries = store.list_errors_summary(20).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert!(summaries[0].has_suggestion);
+    }
+
+    #[test]
+    fn test_list_errors_corrupt_skipped() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        let now = chrono::Utc::now();
+        let good_err = ErrorRecord {
+            tool: "rustc".into(),
+            kind: "E0599".into(),
+            hash: "goodhash".into(),
+            raw_excerpt: "error".into(),
+            first_seen: now,
+            last_seen: now,
+            occurrences: 1,
+            last_command: "cargo build".into(),
+        };
+        store.put_error(&good_err).unwrap();
+
+        // Write a corrupt error file
+        let corrupt_path = tmp.path().join("error_corrupthash.json");
+        fs::write(&corrupt_path, "{ invalid json }").unwrap();
+
+        // list_errors_summary should skip the corrupt file and return only good one
+        let summaries = store.list_errors_summary(20).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].hash, "goodhash");
     }
 }
