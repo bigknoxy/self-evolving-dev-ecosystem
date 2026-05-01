@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tempfile::TempDir;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 
 use organism_knowledge::KnowledgeStore;
 use organism_protocol::{EventContext, OrganismEvent, TerminalEvent};
@@ -46,8 +46,9 @@ async fn error_subscriber_persists_and_increments() {
     // Spawn subscriber.
     let sub_bus = bus.clone();
     let sub_knowledge = knowledge.clone();
+    let (_shutdown_tx, shutdown_rx) = broadcast::channel(1);
     let handle = tokio::spawn(async move {
-        let _ = error_subscriber::run(sub_bus, sub_knowledge).await;
+        let _ = error_subscriber::run(sub_bus, sub_knowledge, shutdown_rx).await;
     });
 
     // Give the subscriber a moment to subscribe.

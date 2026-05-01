@@ -11,7 +11,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use tokio::time::timeout;
 
 use organism_knowledge::KnowledgeStore;
@@ -69,8 +69,16 @@ async fn event_ingest_records_and_appears_in_log() {
     let serve_bus = bus.clone();
     let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
+    let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
     let server_handle = tokio::spawn(async move {
-        let _ = ipc::serve(serve_state, serve_bus, serve_knowledge, serve_socket).await;
+        let _ = ipc::serve(
+            serve_state,
+            serve_bus,
+            serve_knowledge,
+            serve_socket,
+            shutdown_rx,
+        )
+        .await;
     });
 
     for _ in 0..50 {
@@ -150,6 +158,7 @@ async fn event_ingest_records_and_appears_in_log() {
         joined
     );
 
+    let _ = shutdown_tx.send(());
     server_handle.abort();
 }
 
@@ -166,8 +175,16 @@ async fn event_ingest_when_asleep_acks_but_does_not_record() {
     let serve_bus = bus.clone();
     let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
+    let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
     let server_handle = tokio::spawn(async move {
-        let _ = ipc::serve(serve_state, serve_bus, serve_knowledge, serve_socket).await;
+        let _ = ipc::serve(
+            serve_state,
+            serve_bus,
+            serve_knowledge,
+            serve_socket,
+            shutdown_rx,
+        )
+        .await;
     });
 
     for _ in 0..50 {
@@ -223,5 +240,6 @@ async fn event_ingest_when_asleep_acks_but_does_not_record() {
         .unwrap();
     assert_eq!(count, 0, "asleep daemon should keep event_count at 0");
 
+    let _ = shutdown_tx.send(());
     server_handle.abort();
 }

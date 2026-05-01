@@ -9,6 +9,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
 use organism_protocol::{
@@ -29,11 +30,13 @@ fn is_safe_error_key(key: &str) -> bool {
 
 /// Bind a Unix socket at `socket_path` and serve incoming RPC requests.
 /// Cleans up any stale socket file before binding.
+/// Listens for shutdown signal and stops accepting new connections.
 pub async fn serve(
     state: Arc<RwLock<DaemonState>>,
     bus: Arc<EventBus>,
     knowledge: Arc<RwLock<KnowledgeStore>>,
     socket_path: PathBuf,
+    mut shutdown: broadcast::Receiver<()>,
 ) -> Result<()> {
     if let Some(parent) = socket_path.parent() {
         tokio::fs::create_dir_all(parent)
@@ -51,24 +54,35 @@ pub async fn serve(
     info!(socket = ?socket_path, "IPC listener bound");
 
     loop {
-        match listener.accept().await {
-            Ok((stream, _addr)) => {
-                let state_clone = state.clone();
-                let bus_clone = bus.clone();
-                let knowledge_clone = knowledge.clone();
-                tokio::spawn(async move {
-                    if let Err(e) =
-                        handle_connection(state_clone, bus_clone, knowledge_clone, stream).await
-                    {
-                        warn!(error = %e, "ipc connection error");
-                    }
-                });
+        tokio::select! {
+            _ = shutdown.recv() => {
+                debug!("IPC server received shutdown signal, stopping accept loop");
+                break;
             }
-            Err(e) => {
-                error!(error = %e, "accept failed");
+            accept_result = listener.accept() => {
+                match accept_result {
+                    Ok((stream, _addr)) => {
+                        let state_clone = state.clone();
+                        let bus_clone = bus.clone();
+                        let knowledge_clone = knowledge.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) =
+                                handle_connection(state_clone, bus_clone, knowledge_clone, stream).await
+                            {
+                                warn!(error = %e, "ipc connection error");
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        error!(error = %e, "accept failed");
+                    }
+                }
             }
         }
     }
+
+    info!("IPC server shut down");
+    Ok(())
 }
 
 async fn handle_connection(

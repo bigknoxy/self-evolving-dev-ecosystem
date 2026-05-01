@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use chrono::{Duration, Utc};
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, warn};
 
 use organism_cortex::classify;
@@ -18,11 +18,21 @@ use organism_protocol::{ErrorClassifiedEvent, OrganismEvent};
 
 use crate::event_bus::EventBus;
 
-pub async fn run(bus: Arc<EventBus>, knowledge: Arc<RwLock<KnowledgeStore>>) -> Result<()> {
+pub async fn run(
+    bus: Arc<EventBus>,
+    knowledge: Arc<RwLock<KnowledgeStore>>,
+    mut shutdown: broadcast::Receiver<()>,
+) -> Result<()> {
     let mut rx = bus.subscribe();
     let mut window_state: HashMap<String, chrono::DateTime<Utc>> = HashMap::new();
     loop {
-        match rx.recv().await {
+        tokio::select! {
+            _ = shutdown.recv() => {
+                debug!("error_subscriber received shutdown signal");
+                break;
+            }
+            msg = rx.recv() => {
+        match msg {
             Ok(OrganismEvent::Terminal(term)) => {
                 if term.exit_code == Some(0) {
                     continue;
@@ -116,6 +126,9 @@ pub async fn run(bus: Arc<EventBus>, knowledge: Arc<RwLock<KnowledgeStore>>) -> 
                 break;
             }
         }
+            }
+        }
     }
+    debug!("error_subscriber stopped");
     Ok(())
 }

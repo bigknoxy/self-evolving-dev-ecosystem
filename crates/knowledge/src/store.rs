@@ -20,6 +20,17 @@ pub struct ErrorSummary {
     pub has_suggestion: bool,
 }
 
+/// Write bytes to a file atomically using write-then-rename.
+/// Writes to `path.with_extension("tmp")` first, then renames to `path`.
+/// This ensures that if the process crashes mid-write, only a .tmp file is left behind,
+/// not a corrupted target file.
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, bytes).with_context(|| format!("Writing temporary file {:?}", tmp))?;
+    fs::rename(&tmp, path).with_context(|| format!("Renaming {:?} to {:?}", tmp, path))?;
+    Ok(())
+}
+
 /// File-backed key-value store
 pub struct KnowledgeStore {
     data_dir: PathBuf,
@@ -59,7 +70,7 @@ impl KnowledgeStore {
     pub fn put<T: Serialize>(&mut self, key: &str, value: &T) -> Result<()> {
         let content = serde_json::to_string_pretty(value)?;
         let path = self.key_to_path(key);
-        fs::write(&path, &content).with_context(|| format!("Writing {:?}", path))?;
+        atomic_write(&path, content.as_bytes()).with_context(|| format!("Writing {:?}", path))?;
         self.cache.insert(key.to_string(), content);
         Ok(())
     }
@@ -436,5 +447,39 @@ mod tests {
         let summaries = store.list_errors_summary(20).unwrap();
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].hash, "goodhash");
+    }
+
+    #[test]
+    fn test_atomic_write_no_tmp_left() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target = tmp.path().join("test_file.json");
+        let content = b"test content";
+
+        atomic_write(&target, content).unwrap();
+
+        // File should exist
+        assert!(target.exists());
+        assert_eq!(fs::read(&target).unwrap(), content);
+
+        // No .tmp file should be left behind
+        let tmp_file = target.with_extension("tmp");
+        assert!(
+            !tmp_file.exists(),
+            ".tmp file was not cleaned up after atomic_write"
+        );
+    }
+
+    #[test]
+    fn test_atomic_write_large_content() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target = tmp.path().join("large_file.json");
+        // Create 1MB of content
+        let content = vec![b'x'; 1024 * 1024];
+
+        let result = atomic_write(&target, &content);
+        assert!(result.is_ok(), "atomic_write should handle large content");
+
+        assert!(target.exists());
+        assert_eq!(fs::read(&target).unwrap().len(), content.len());
     }
 }
