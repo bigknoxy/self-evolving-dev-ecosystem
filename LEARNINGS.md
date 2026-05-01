@@ -179,3 +179,19 @@ Updated `crates/client/src/main.rs` `cmd_suggest()` to accept `--error-key FLAG`
 ## Completed: TASK-L3-06 — 2026-04-30
 
 Implemented `crates/daemon/tests/ollama_integration_test.rs` with wiremock fake Ollama server. Three tests: (1) suggest_for_error with mock Ollama success response, (2) Ollama 500 error handling, (3) error record not found. OllamaClient now implements LlmClient trait via `#[async_trait]`. All 3 integration tests passing.
+
+## Completed: TASK-L3.5-01..06 — 2026-04-30
+
+L3.5 effector seed shipped on branch `feat/l3.5-effector`.
+
+- **L3.5-01** `crates/cortex/src/apply.rs` — pure `extract_plan(&str) -> ApplyPlan` parses fenced ```diff/patch/bash/sh/zsh/shell``` blocks; everything else collapses to `Note`. 7 unit tests. Used `OnceLock<Regex>` + `expect("compile-time literal")` to obey CLAUDE.md no-`unwrap()`-outside-tests rule.
+- **L3.5-02** `crates/protocol/src/messages.rs` — added `ApplyRequest { error_key, mode }`, `ApplyMode { Dry, Stage }`, `ApplyResponse { plan_kind, artifact_path, clipboard, message }`; re-exported in `lib.rs`. 4 roundtrip tests.
+- **L3.5-03** `crates/knowledge/src/store.rs::load_pair(hash)` returns `(Option<ErrorRecord>, Option<String>)` for one-shot daemon lookup.
+- **L3.5-04** `crates/daemon/src/clipboard.rs` — best-effort `pbcopy` (macOS) / `xclip` (Linux); returns `Ok(false)` when binary absent, never errors.
+- **L3.5-05** `crates/daemon/src/ipc.rs` — added `apply` dispatch arm + `is_safe_error_key()` (regex `^[a-f0-9]{1,64}$`, blocks `../etc/passwd` traversal) + `build_apply_response()` matrix over Note × Patch{Dry,Stage} × Shell{Dry,Stage}. Patch+Stage writes `std::env::temp_dir()/organism-<hash>.patch`. 6 unit + 3 integration tests (`tests/apply_test.rs`).
+- **L3.5-06** `crates/client/src/main.rs::cmd_apply` — sends `apply` envelope, prints `[kind]\n{message}` and optional `artifact: <path>`. Validates hex key client-side too.
+
+Gotchas:
+- Daemon binary-only crate → integration tests must mount each src module via `#[path = "../src/X.rs"] mod X;` + `#[allow(dead_code)]`. Forgot `clipboard` mount in two existing tests (`ipc_test.rs`, `event_ingest_test.rs`); compiler error `unresolved import crate::clipboard`. Fixed by adding the mount declaration.
+- Local Ollama subagent emitted `Regex::new(...).unwrap()` — banned by CLAUDE.md. Switched to `OnceLock` + `.expect()` with literal-justifies-panic message.
+- `ErrorRecord.last_command` is `String`, not `Option<String>` (per `crates/knowledge/src/types.rs:57`); local model assumed Option.

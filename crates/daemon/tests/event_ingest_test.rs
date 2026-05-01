@@ -18,6 +18,10 @@ use organism_knowledge::KnowledgeStore;
 use organism_protocol::{Envelope, EventContext, OrganismEvent, TerminalEvent};
 
 #[allow(dead_code)]
+#[path = "../src/clipboard.rs"]
+mod clipboard;
+
+#[allow(dead_code)]
 #[path = "../src/event_bus.rs"]
 mod event_bus;
 

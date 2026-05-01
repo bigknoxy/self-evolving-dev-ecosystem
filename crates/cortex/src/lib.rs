@@ -1,3 +1,4 @@
+pub mod apply;
 pub mod context_detector;
 pub mod error_classifier;
 pub mod pattern_engine;

@@ -21,6 +21,10 @@ use organism_protocol::Envelope;
 // (Daemon::new, run_event_loop, knowledge field, etc.) are not exercised by
 // this test and would otherwise trip dead_code lints.
 #[allow(dead_code)]
+#[path = "../src/clipboard.rs"]
+mod clipboard;
+
+#[allow(dead_code)]
 #[path = "../src/event_bus.rs"]
 mod event_bus;
 

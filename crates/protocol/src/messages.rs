@@ -87,3 +87,85 @@ pub struct SuggestResponse {
     pub text: String,
     pub cached: bool,
 }
+
+/// Apply request payload — turn a cached suggestion into an actionable artifact.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApplyRequest {
+    pub error_key: String,
+    pub mode: ApplyMode,
+}
+
+/// Apply execution mode. `Dry` is preview-only and the safe default.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplyMode {
+    /// Print the plan to stdout. Side-effect free.
+    Dry,
+    /// Materialize the plan: write patch to a tempfile, or copy shell cmd to clipboard.
+    Stage,
+}
+
+/// Apply response payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApplyResponse {
+    /// "patch" | "shell" | "note"
+    pub plan_kind: String,
+    /// Path to a staged patch file, if any.
+    pub artifact_path: Option<String>,
+    /// True when a shell command was successfully copied to the clipboard.
+    pub clipboard: bool,
+    /// Human-readable summary for the CLI to print.
+    pub message: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn roundtrip<T>(value: &T)
+    where
+        T: Serialize + for<'de> Deserialize<'de> + std::fmt::Debug + PartialEq,
+    {
+        let json = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(&back, value);
+    }
+
+    #[test]
+    fn apply_mode_dry_roundtrip() {
+        roundtrip(&ApplyMode::Dry);
+    }
+
+    #[test]
+    fn apply_mode_stage_roundtrip() {
+        roundtrip(&ApplyMode::Stage);
+    }
+
+    #[test]
+    fn apply_request_roundtrip() {
+        let json = serde_json::to_string(&ApplyRequest {
+            error_key: "abc123".into(),
+            mode: ApplyMode::Stage,
+        })
+        .unwrap();
+        let back: ApplyRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.error_key, "abc123");
+        assert_eq!(back.mode, ApplyMode::Stage);
+    }
+
+    #[test]
+    fn apply_response_roundtrip() {
+        let resp = ApplyResponse {
+            plan_kind: "patch".into(),
+            artifact_path: Some("/tmp/x.patch".into()),
+            clipboard: false,
+            message: "ok".into(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: ApplyResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.plan_kind, resp.plan_kind);
+        assert_eq!(back.artifact_path, resp.artifact_path);
+        assert_eq!(back.clipboard, resp.clipboard);
+        assert_eq!(back.message, resp.message);
+    }
+}

@@ -139,6 +139,14 @@ impl KnowledgeStore {
         }
     }
 
+    /// Convenience: load both error record and cached suggestion text for a hash.
+    /// Either or both may be `None` if not stored.
+    pub fn load_pair(&mut self, hash: &str) -> Result<(Option<ErrorRecord>, Option<String>)> {
+        let err = self.get_error(hash)?;
+        let sug = self.get_suggestion(hash)?;
+        Ok((err, sug))
+    }
+
     pub fn put_suggestion(&mut self, hash: &str, text: &str) -> Result<()> {
         let rec = SuggestionRecord {
             text: text.to_string(),
@@ -172,6 +180,38 @@ mod tests {
 
         let retrieved = store.get_suggestion("nonexistent").unwrap();
         assert_eq!(retrieved, None);
+    }
+
+    #[test]
+    fn test_load_pair_both_present() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+        let hash = "abc123";
+        let err = ErrorRecord {
+            tool: "rustc".into(),
+            kind: "E0599".into(),
+            hash: hash.into(),
+            raw_excerpt: "no method foo".into(),
+            first_seen: chrono::Utc::now(),
+            last_seen: chrono::Utc::now(),
+            occurrences: 1,
+            last_command: "cargo build".into(),
+        };
+        store.put_error(&err).unwrap();
+        store.put_suggestion(hash, "do the thing").unwrap();
+        let (e, s) = store.load_pair(hash).unwrap();
+        assert!(e.is_some());
+        assert_eq!(s, Some("do the thing".to_string()));
+    }
+
+    #[test]
+    fn test_load_pair_half_missing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+        store.put_suggestion("only_sug", "lonely").unwrap();
+        let (e, s) = store.load_pair("only_sug").unwrap();
+        assert!(e.is_none());
+        assert_eq!(s, Some("lonely".to_string()));
     }
 
     #[test]

@@ -63,6 +63,7 @@ twin. Local-first, no network.
 | L1 Sensor wiring | Bidirectional Unix socket IPC, zsh hook → `emit-terminal` | DONE |
 | L2 Watcher + classifier + install | `notify` file watcher, regex error classifier, `install.sh` + LaunchAgent | DONE |
 | L3 Ollama integration | Ollama HTTP client, `suggest` module, daemon subscriber, CLI `suggest` command (gated by `OLLAMA_ENABLED=1`) | DONE |
+| L3.5 Effector seed | `apply` IPC + CLI parses cached suggestions into patch/shell/note plans; `--stage` writes patch to `/tmp` or copies shell to clipboard. Daemon never mutates source files. | DONE |
 | L4 Digital twin | Codes alongside you in your style | PLANNED |
 
 ## Install
@@ -123,6 +124,18 @@ organism-cli emit-terminal "cargo build" \
 # context-aware suggestion (requires L3 + Ollama)
 OLLAMA_ENABLED=1 organism-cli suggest
 ```
+
+### Apply a suggestion (L3.5)
+
+```bash
+# preview only — prints plan, does nothing
+organism-cli apply <error-hash>
+
+# stage it: writes diff to /tmp or copies shell cmd to clipboard
+organism-cli apply <error-hash> --stage
+```
+
+Daemon never writes to your source files. `--stage` produces an artifact (patch file or clipboard copy) that you apply yourself. `<error-hash>` must be lowercase hex, ≤64 chars.
 
 Suggestion environment variables:
 

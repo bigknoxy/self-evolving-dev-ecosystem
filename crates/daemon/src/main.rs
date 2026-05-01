@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+mod clipboard;
 mod daemon;
 mod error_subscriber;
 mod event_bus;
