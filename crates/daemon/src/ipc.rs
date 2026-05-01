@@ -12,8 +12,8 @@ use tokio::net::{UnixListener, UnixStream};
 use tracing::{debug, error, info, warn};
 
 use organism_protocol::{
-    ApplyMode, ApplyRequest, ApplyResponse, Envelope, ErrorsRequest, ErrorsResponse,
-    ErrorSummaryWire, OrganismEvent, SuggestRequest, SuggestResponse,
+    ApplyMode, ApplyRequest, ApplyResponse, Envelope, ErrorSummaryWire, ErrorsRequest,
+    ErrorsResponse, OrganismEvent, SuggestRequest, SuggestResponse,
 };
 
 use crate::clipboard;
@@ -202,22 +202,24 @@ async fn dispatch(
                             hash: s.hash,
                             command: s.last_command,
                             occurrences: s.occurrences,
-                            last_seen: s.last_seen.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                            last_seen: s
+                                .last_seen
+                                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                             has_suggestion: s.has_suggestion,
                         })
                         .collect();
                     let resp = ErrorsResponse { items };
                     match serde_json::to_value(resp) {
                         Ok(v) => Envelope::ok_response(&req.id, v),
-                        Err(e) => {
-                            Envelope::error_response(&req.id, &format!("response serialize failed: {}", e))
-                        }
+                        Err(e) => Envelope::error_response(
+                            &req.id,
+                            &format!("response serialize failed: {}", e),
+                        ),
                     }
                 }
-                Err(e) => Envelope::error_response(
-                    &req.id,
-                    &format!("failed to list errors: {}", e),
-                ),
+                Err(e) => {
+                    Envelope::error_response(&req.id, &format!("failed to list errors: {}", e))
+                }
             }
         }
         "apply" => {

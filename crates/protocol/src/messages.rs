@@ -130,7 +130,7 @@ pub struct ErrorSummaryWire {
     pub hash: String,
     pub command: String,
     pub occurrences: u32,
-    pub last_seen: String,  // RFC3339 format
+    pub last_seen: String, // RFC3339 format
     pub has_suggestion: bool,
 }
 
@@ -193,9 +193,7 @@ mod tests {
 
     #[test]
     fn errors_response_empty_roundtrip() {
-        let resp = ErrorsResponse {
-            items: vec![],
-        };
+        let resp = ErrorsResponse { items: vec![] };
         let json = serde_json::to_string(&resp).unwrap();
         let back: ErrorsResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(back.items.len(), 0);

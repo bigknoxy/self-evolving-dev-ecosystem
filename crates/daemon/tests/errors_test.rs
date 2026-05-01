@@ -12,7 +12,7 @@ use tokio::net::UnixStream;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
 
-use organism_knowledge::{KnowledgeStore, ErrorRecord};
+use organism_knowledge::{ErrorRecord, KnowledgeStore};
 use organism_protocol::{Envelope, ErrorsRequest, ErrorsResponse};
 
 #[allow(dead_code)]
@@ -123,8 +123,9 @@ async fn errors_returns_sorted_list() {
     let resp_env = send(&socket_path, req).await;
 
     // Parse response
-    let resp: ErrorsResponse = serde_json::from_value(resp_env.payload.get("result").unwrap().clone())
-        .expect("parse errors response");
+    let resp: ErrorsResponse =
+        serde_json::from_value(resp_env.payload.get("result").unwrap().clone())
+            .expect("parse errors response");
 
     // Assert we have 2 items
     assert_eq!(resp.items.len(), 2);

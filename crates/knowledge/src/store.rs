@@ -160,7 +160,8 @@ impl KnowledgeStore {
                         match serde_json::from_str::<ErrorRecord>(&content) {
                             Ok(record) => {
                                 // Check if suggestion exists
-                                let suggestion_key = format!("{}{}",keys::SUGGESTION_PREFIX, record.hash);
+                                let suggestion_key =
+                                    format!("{}{}", keys::SUGGESTION_PREFIX, record.hash);
                                 let safe_sug_key = suggestion_key.replace([':', '/'], "_");
                                 let sug_path = self.data_dir.join(format!("{}.json", safe_sug_key));
                                 let has_suggestion = sug_path.exists();
@@ -401,7 +402,9 @@ mod tests {
         assert!(!summaries[0].has_suggestion);
 
         // After adding suggestion
-        store.put_suggestion("hashwithreason", "do the thing").unwrap();
+        store
+            .put_suggestion("hashwithreason", "do the thing")
+            .unwrap();
         let summaries = store.list_errors_summary(20).unwrap();
         assert_eq!(summaries.len(), 1);
         assert!(summaries[0].has_suggestion);

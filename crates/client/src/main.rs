@@ -324,18 +324,15 @@ async fn cmd_errors(args: &[String]) -> Result<()> {
         }
 
         // Print header
-        println!("{:<10} {:<9} {:<6} {:<5} {:<30}", "HASH", "AGE", "OCC", "SUG", "COMMAND");
+        println!(
+            "{:<10} {:<9} {:<6} {:<5} {:<30}",
+            "HASH", "AGE", "OCC", "SUG", "COMMAND"
+        );
         println!("{}", "-".repeat(70));
 
         for item in items {
-            let hash = item
-                .get("hash")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let command = item
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
+            let hash = item.get("hash").and_then(|v| v.as_str()).unwrap_or("?");
+            let command = item.get("command").and_then(|v| v.as_str()).unwrap_or("?");
             let occurrences = item
                 .get("occurrences")
                 .and_then(|v| v.as_u64())
@@ -351,11 +348,7 @@ async fn cmd_errors(args: &[String]) -> Result<()> {
 
             let age = format_age(last_seen);
             let sug_tag = if has_suggestion { "yes" } else { "no" };
-            let hash_short = if hash.len() > 10 {
-                &hash[..10]
-            } else {
-                hash
-            };
+            let hash_short = if hash.len() > 10 { &hash[..10] } else { hash };
             let cmd_short = if command.len() > 30 {
                 format!("{}...", &command[..27])
             } else {
@@ -571,8 +564,8 @@ mod tests {
     #[test]
     fn format_age_minutes() {
         let now = chrono::Utc::now();
-        let three_mins_ago = (now - chrono::Duration::minutes(3))
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let three_mins_ago =
+            (now - chrono::Duration::minutes(3)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let age = format_age(&three_mins_ago);
         assert_eq!(age, "3m");
     }
@@ -580,8 +573,8 @@ mod tests {
     #[test]
     fn format_age_hours() {
         let now = chrono::Utc::now();
-        let one_hour_ago = (now - chrono::Duration::hours(1))
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let one_hour_ago =
+            (now - chrono::Duration::hours(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let age = format_age(&one_hour_ago);
         assert_eq!(age, "1h");
     }
@@ -589,8 +582,8 @@ mod tests {
     #[test]
     fn format_age_days() {
         let now = chrono::Utc::now();
-        let two_days_ago = (now - chrono::Duration::days(2))
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let two_days_ago =
+            (now - chrono::Duration::days(2)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let age = format_age(&two_days_ago);
         assert_eq!(age, "2d");
     }
