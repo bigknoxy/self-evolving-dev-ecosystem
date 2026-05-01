@@ -188,7 +188,7 @@ impl KnowledgeStore {
         }
 
         // Sort by last_seen DESC
-        summaries.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+        summaries.sort_by_key(|s| std::cmp::Reverse(s.last_seen));
 
         // Apply limit
         summaries.truncate(limit);
@@ -398,13 +398,13 @@ mod tests {
         // Before adding suggestion
         let summaries = store.list_errors_summary(20).unwrap();
         assert_eq!(summaries.len(), 1);
-        assert_eq!(summaries[0].has_suggestion, false);
+        assert!(!summaries[0].has_suggestion);
 
         // After adding suggestion
         store.put_suggestion("hashwithreason", "do the thing").unwrap();
         let summaries = store.list_errors_summary(20).unwrap();
         assert_eq!(summaries.len(), 1);
-        assert_eq!(summaries[0].has_suggestion, true);
+        assert!(summaries[0].has_suggestion);
     }
 
     #[test]

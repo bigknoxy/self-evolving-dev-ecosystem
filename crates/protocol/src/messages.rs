@@ -118,6 +118,28 @@ pub struct ApplyResponse {
     pub message: String,
 }
 
+/// Errors listing request payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorsRequest {
+    pub limit: Option<usize>,
+}
+
+/// Wire format for a single error summary
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorSummaryWire {
+    pub hash: String,
+    pub command: String,
+    pub occurrences: u32,
+    pub last_seen: String,  // RFC3339 format
+    pub has_suggestion: bool,
+}
+
+/// Errors listing response payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorsResponse {
+    pub items: Vec<ErrorSummaryWire>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,5 +189,44 @@ mod tests {
         assert_eq!(back.artifact_path, resp.artifact_path);
         assert_eq!(back.clipboard, resp.clipboard);
         assert_eq!(back.message, resp.message);
+    }
+
+    #[test]
+    fn errors_response_empty_roundtrip() {
+        let resp = ErrorsResponse {
+            items: vec![],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: ErrorsResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.items.len(), 0);
+    }
+
+    #[test]
+    fn errors_response_with_items_roundtrip() {
+        let resp = ErrorsResponse {
+            items: vec![
+                ErrorSummaryWire {
+                    hash: "deadbeef".into(),
+                    command: "cargo build --workspace".into(),
+                    occurrences: 4,
+                    last_seen: "2026-04-30T10:30:00Z".into(),
+                    has_suggestion: true,
+                },
+                ErrorSummaryWire {
+                    hash: "cafef00d".into(),
+                    command: "pnpm test".into(),
+                    occurrences: 1,
+                    last_seen: "2026-04-30T09:15:00Z".into(),
+                    has_suggestion: false,
+                },
+            ],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: ErrorsResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.items.len(), 2);
+        assert_eq!(back.items[0].hash, "deadbeef");
+        assert_eq!(back.items[1].hash, "cafef00d");
+        assert!(back.items[0].has_suggestion);
+        assert!(!back.items[1].has_suggestion);
     }
 }
