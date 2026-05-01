@@ -14,17 +14,37 @@ use daemon::Daemon;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize structured logging
+    // Determine data directory FIRST for logging setup
+    let data_dir = organism_data_dir();
+    std::fs::create_dir_all(&data_dir)?;
+
+    // Initialize file logging before any tokio::spawn
+    let log_dir = data_dir.join("logs");
+    std::fs::create_dir_all(&log_dir)?;
+
+    // Create rolling file appender with daily rotation and max 7 files
+    let file_appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .max_log_files(7)
+        .filename_prefix("daemon.log")
+        .build(&log_dir)?;
+
+    let (non_blocking, _log_guard) = tracing_appender::non_blocking(file_appender);
+
+    // Initialize structured logging with file output
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
+        .with_writer(non_blocking)
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".parse().unwrap()),
+        )
+        .json()
         .init();
 
     info!("Organism daemon starting...");
+    info!(data_dir = ?data_dir, "Data dir initialized");
 
-    // Determine data directory
-    let data_dir = organism_data_dir();
-    std::fs::create_dir_all(&data_dir)?;
-    info!("Data dir: {:?}", data_dir);
+    // NOTE: Dropping _log_guard truncates pending log writes.
+    // The guard must be held for the entire daemon lifetime (main() scope).
 
     let daemon = Daemon::new(data_dir.clone())?;
 
