@@ -26,7 +26,10 @@ typeset -g __ORGANISM_LAST_START=0
 
 __organism_now_ms() {
   if zmodload -e zsh/datetime 2>/dev/null || zmodload zsh/datetime 2>/dev/null; then
-    print -r -- "$(( ${EPOCHREALTIME//./} / 1000 ))"
+    local _er=${EPOCHREALTIME}
+    local _sec=${_er%.*} _frac=${_er#*.}
+    _frac=${_frac}000
+    print -r -- "$(( _sec * 1000 + 10#${_frac[1,3]} ))"
   else
     print -r -- "$(( $(date +%s) * 1000 ))"
   fi
