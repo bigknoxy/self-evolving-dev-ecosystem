@@ -11,12 +11,21 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{debug, error, info, warn};
 
-use organism_protocol::{Envelope, OrganismEvent, SuggestRequest, SuggestResponse};
+use organism_protocol::{
+    ApplyMode, ApplyRequest, ApplyResponse, Envelope, OrganismEvent, SuggestRequest,
+    SuggestResponse,
+};
 
+use crate::clipboard;
 use crate::daemon::DaemonState;
 use crate::event_bus::EventBus;
+use organism_cortex::apply::{extract_plan, ApplyPlan};
 use organism_knowledge::KnowledgeStore;
 use tokio::sync::RwLock;
+
+fn is_safe_error_key(key: &str) -> bool {
+    !key.is_empty() && key.len() <= 64 && key.chars().all(|c| c.is_ascii_hexdigit())
+}
 
 /// Bind a Unix socket at `socket_path` and serve incoming RPC requests.
 /// Cleans up any stale socket file before binding.
@@ -174,6 +183,56 @@ async fn dispatch(
                 serde_json::to_value(SuggestResponse { text, cached }).unwrap(),
             )
         }
+        "apply" => {
+            let params = req
+                .payload
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let req_data: ApplyRequest = match serde_json::from_value(params) {
+                Ok(r) => r,
+                Err(e) => {
+                    return Envelope::error_response(
+                        &req.id,
+                        &format!("invalid apply request: {}", e),
+                    );
+                }
+            };
+
+            if !is_safe_error_key(&req_data.error_key) {
+                return Envelope::error_response(
+                    &req.id,
+                    "invalid error_key (must be 1-64 hex chars)",
+                );
+            }
+
+            let mut store = knowledge.write().await;
+            let suggestion = match store.get_suggestion(&req_data.error_key) {
+                Ok(Some(t)) => t,
+                Ok(None) => {
+                    return Envelope::error_response(
+                        &req.id,
+                        "no cached suggestion for that error_key",
+                    );
+                }
+                Err(e) => {
+                    return Envelope::error_response(
+                        &req.id,
+                        &format!("knowledge read failed: {}", e),
+                    );
+                }
+            };
+            drop(store);
+
+            let plan = extract_plan(&suggestion);
+            let resp = build_apply_response(&plan, req_data.mode, &req_data.error_key);
+            match serde_json::to_value(resp) {
+                Ok(v) => Envelope::ok_response(&req.id, v),
+                Err(e) => {
+                    Envelope::error_response(&req.id, &format!("response serialize failed: {}", e))
+                }
+            }
+        }
         "event" => {
             // params should be a serialized OrganismEvent.
             let params = req
@@ -218,6 +277,64 @@ async fn dispatch(
     }
 }
 
+fn build_apply_response(plan: &ApplyPlan, mode: ApplyMode, error_key: &str) -> ApplyResponse {
+    match plan {
+        ApplyPlan::Note { text } => ApplyResponse {
+            plan_kind: "note".into(),
+            artifact_path: None,
+            clipboard: false,
+            message: text.clone(),
+        },
+        ApplyPlan::Patch { diff } => match mode {
+            ApplyMode::Dry => ApplyResponse {
+                plan_kind: "patch".into(),
+                artifact_path: None,
+                clipboard: false,
+                message: format!("diff (dry-run):\n\n{}", diff),
+            },
+            ApplyMode::Stage => {
+                let path = std::env::temp_dir().join(format!("organism-{}.patch", error_key));
+                match std::fs::write(&path, diff) {
+                    Ok(_) => ApplyResponse {
+                        plan_kind: "patch".into(),
+                        artifact_path: Some(path.to_string_lossy().into_owned()),
+                        clipboard: false,
+                        message: format!("patch written. apply with: git apply {}", path.display()),
+                    },
+                    Err(e) => ApplyResponse {
+                        plan_kind: "patch".into(),
+                        artifact_path: None,
+                        clipboard: false,
+                        message: format!("failed to write patch: {}\n\n{}", e, diff),
+                    },
+                }
+            }
+        },
+        ApplyPlan::Shell { command } => match mode {
+            ApplyMode::Dry => ApplyResponse {
+                plan_kind: "shell".into(),
+                artifact_path: None,
+                clipboard: false,
+                message: format!("would run:\n{}", command),
+            },
+            ApplyMode::Stage => {
+                let copied = clipboard::copy(command).unwrap_or(false);
+                let message = if copied {
+                    format!("copied to clipboard:\n{}", command)
+                } else {
+                    format!("clipboard unavailable. run manually:\n{}", command)
+                };
+                ApplyResponse {
+                    plan_kind: "shell".into(),
+                    artifact_path: None,
+                    clipboard: copied,
+                    message,
+                }
+            }
+        },
+    }
+}
+
 /// Resolve the on-disk socket path under the organism data directory.
 pub fn socket_path_for(data_dir: &Path) -> PathBuf {
     data_dir.join("daemon.sock")
@@ -231,5 +348,64 @@ mod tests {
     fn socket_path_appends_filename() {
         let p = socket_path_for(Path::new("/tmp/x"));
         assert_eq!(p, PathBuf::from("/tmp/x/daemon.sock"));
+    }
+
+    #[test]
+    fn safe_error_key_accepts_hex() {
+        assert!(is_safe_error_key("abc123"));
+        assert!(is_safe_error_key("0123456789abcdef"));
+    }
+
+    #[test]
+    fn safe_error_key_rejects_traversal_and_garbage() {
+        assert!(!is_safe_error_key(""));
+        assert!(!is_safe_error_key("../etc/passwd"));
+        assert!(!is_safe_error_key("abc/def"));
+        assert!(!is_safe_error_key("nothex!"));
+        assert!(!is_safe_error_key(&"a".repeat(65)));
+    }
+
+    #[test]
+    fn build_apply_response_note() {
+        let plan = ApplyPlan::Note { text: "hi".into() };
+        let r = build_apply_response(&plan, ApplyMode::Dry, "abc");
+        assert_eq!(r.plan_kind, "note");
+        assert_eq!(r.message, "hi");
+    }
+
+    #[test]
+    fn build_apply_response_patch_dry() {
+        let plan = ApplyPlan::Patch {
+            diff: "-a\n+b\n".into(),
+        };
+        let r = build_apply_response(&plan, ApplyMode::Dry, "abc");
+        assert_eq!(r.plan_kind, "patch");
+        assert!(r.artifact_path.is_none());
+        assert!(r.message.contains("-a"));
+    }
+
+    #[test]
+    fn build_apply_response_patch_stage_writes_file() {
+        let plan = ApplyPlan::Patch {
+            diff: "-a\n+b\n".into(),
+        };
+        let key = format!("test{}", std::process::id());
+        let r = build_apply_response(&plan, ApplyMode::Stage, &key);
+        assert_eq!(r.plan_kind, "patch");
+        let p = r.artifact_path.expect("artifact_path set");
+        let content = std::fs::read_to_string(&p).expect("patch file");
+        assert_eq!(content, "-a\n+b\n");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn build_apply_response_shell_dry() {
+        let plan = ApplyPlan::Shell {
+            command: "echo hi".into(),
+        };
+        let r = build_apply_response(&plan, ApplyMode::Dry, "abc");
+        assert_eq!(r.plan_kind, "shell");
+        assert!(!r.clipboard);
+        assert!(r.message.contains("echo hi"));
     }
 }

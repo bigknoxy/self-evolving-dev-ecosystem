@@ -22,6 +22,7 @@ async fn main() -> ExitCode {
     let result = match cmd {
         "status" => cmd_status().await,
         "suggest" => cmd_suggest().await,
+        "apply" => cmd_apply(&args[2..]).await,
         "log" => cmd_log().await,
         "sleep" => cmd_sleep().await,
         "wake" => cmd_wake().await,
@@ -50,6 +51,8 @@ fn cmd_help() {
     println!("COMMANDS:");
     println!("  status    Show daemon status");
     println!("  suggest   Request a suggestion for current directory");
+    println!("  apply <ERROR_KEY> [--stage]");
+    println!("            Materialize a cached suggestion (--stage writes patch / clipboards cmd)");
     println!("  log       Show recent daemon activity");
     println!("  sleep     Pause all daemon activity");
     println!("  wake      Resume daemon activity");
@@ -187,6 +190,60 @@ async fn cmd_suggest() -> Result<()> {
     Ok(())
 }
 
+/// Parse `apply` subcommand args and return (error_key, stage_flag).
+fn parse_apply_args(args: &[String]) -> Result<(String, bool)> {
+    if args.is_empty() {
+        anyhow::bail!(
+            "apply: missing <ERROR_KEY>. Run `organism-cli log` or `suggest` to find one."
+        );
+    }
+    let mut error_key: Option<String> = None;
+    let mut stage = false;
+    for a in args {
+        match a.as_str() {
+            "--stage" => stage = true,
+            other if other.starts_with("--") => anyhow::bail!("unknown flag in apply: {}", other),
+            other => {
+                if error_key.is_some() {
+                    anyhow::bail!("apply: only one ERROR_KEY allowed");
+                }
+                error_key = Some(other.to_string());
+            }
+        }
+    }
+    let key = error_key.ok_or_else(|| anyhow::anyhow!("apply: missing <ERROR_KEY>"))?;
+    if key.is_empty() || key.len() > 64 || !key.chars().all(|c| c.is_ascii_hexdigit()) {
+        anyhow::bail!("apply: ERROR_KEY must be 1-64 hex chars");
+    }
+    Ok((key, stage))
+}
+
+async fn cmd_apply(args: &[String]) -> Result<()> {
+    let (error_key, stage) = parse_apply_args(args)?;
+    let mode = if stage { "stage" } else { "dry" };
+    let resp = send_request(
+        "apply",
+        serde_json::json!({ "error_key": error_key, "mode": mode }),
+    )
+    .await?;
+
+    if let Some(err) = resp.payload.get("error").and_then(|v| v.as_str()) {
+        anyhow::bail!("daemon error: {}", err);
+    }
+
+    let result = resp.payload.get("result").unwrap_or(&resp.payload);
+    let kind = result
+        .get("plan_kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let message = result.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    println!("[{}]\n{}", kind, message);
+    if let Some(p) = result.get("artifact_path").and_then(|v| v.as_str()) {
+        println!("\nartifact: {}", p);
+    }
+    Ok(())
+}
+
 async fn cmd_log() -> Result<()> {
     let resp = send_request("log", serde_json::json!({})).await?;
     let result = resp.payload.get("result").unwrap_or(&resp.payload);
@@ -319,6 +376,48 @@ mod tests {
     fn build_terminal_event_unknown_flag_errors() {
         let args = vec![s("ls"), s("--bogus"), s("x")];
         let err = build_terminal_event(&args).unwrap_err();
+        assert!(err.to_string().contains("unknown flag"));
+    }
+
+    #[test]
+    fn parse_apply_args_rejects_missing_key() {
+        let err = parse_apply_args(&[]).unwrap_err();
+        assert!(err.to_string().contains("missing"));
+    }
+
+    #[test]
+    fn parse_apply_args_default_dry() {
+        let args = vec![s("abc123")];
+        let (key, stage) = parse_apply_args(&args).unwrap();
+        assert_eq!(key, "abc123");
+        assert!(!stage);
+    }
+
+    #[test]
+    fn parse_apply_args_stage_flag() {
+        let args = vec![s("abc123"), s("--stage")];
+        let (_, stage) = parse_apply_args(&args).unwrap();
+        assert!(stage);
+    }
+
+    #[test]
+    fn parse_apply_args_rejects_non_hex() {
+        let args = vec![s("not-hex!")];
+        let err = parse_apply_args(&args).unwrap_err();
+        assert!(err.to_string().contains("hex chars"));
+    }
+
+    #[test]
+    fn parse_apply_args_rejects_path_traversal() {
+        let args = vec![s("../etc")];
+        let err = parse_apply_args(&args).unwrap_err();
+        assert!(err.to_string().contains("hex chars"));
+    }
+
+    #[test]
+    fn parse_apply_args_rejects_unknown_flag() {
+        let args = vec![s("abc"), s("--bogus")];
+        let err = parse_apply_args(&args).unwrap_err();
         assert!(err.to_string().contains("unknown flag"));
     }
 

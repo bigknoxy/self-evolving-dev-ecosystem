@@ -2,7 +2,10 @@ pub mod events;
 pub mod messages;
 
 pub use events::*;
-pub use messages::{Envelope, MessageType, StatusResponse, SuggestRequest, SuggestResponse};
+pub use messages::{
+    ApplyMode, ApplyRequest, ApplyResponse, Envelope, MessageType, StatusResponse, SuggestRequest,
+    SuggestResponse,
+};
 
 #[cfg(test)]
 mod tests {
