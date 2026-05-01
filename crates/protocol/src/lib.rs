@@ -84,10 +84,12 @@ mod tests {
     fn test_suggest_request_roundtrip() {
         let req = SuggestRequest {
             error_key: Some("hash123".to_string()),
+            force: false,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: SuggestRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(back.error_key, Some("hash123".to_string()));
+        assert!(!back.force);
     }
 
     #[test]

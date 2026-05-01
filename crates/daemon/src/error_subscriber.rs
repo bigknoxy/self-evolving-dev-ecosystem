@@ -4,10 +4,11 @@
 //! Spawned from `main.rs` after the daemon is constructed. Runs until the
 //! event bus is closed.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
@@ -19,6 +20,7 @@ use crate::event_bus::EventBus;
 
 pub async fn run(bus: Arc<EventBus>, knowledge: Arc<RwLock<KnowledgeStore>>) -> Result<()> {
     let mut rx = bus.subscribe();
+    let mut window_state: HashMap<String, chrono::DateTime<Utc>> = HashMap::new();
     loop {
         match rx.recv().await {
             Ok(OrganismEvent::Terminal(term)) => {
@@ -47,6 +49,19 @@ pub async fn run(bus: Arc<EventBus>, knowledge: Arc<RwLock<KnowledgeStore>>) -> 
                         if let Err(e) = store.put_error(&existing) {
                             warn!(error = %e, "failed to update ErrorRecord");
                         }
+
+                        // Check 60-second window: is this the first occurrence in the window?
+                        let is_first_in_window = match window_state.get(&sig_hash) {
+                            Some(last_seen) => {
+                                let elapsed = now.signed_duration_since(*last_seen);
+                                elapsed > Duration::seconds(60)
+                            }
+                            None => true,
+                        };
+
+                        // Update window state
+                        window_state.insert(sig_hash.clone(), now);
+
                         // Emit ErrorClassified event after update
                         let _ = bus.publish(OrganismEvent::ErrorClassified(ErrorClassifiedEvent {
                             ts: now,
@@ -54,6 +69,7 @@ pub async fn run(bus: Arc<EventBus>, knowledge: Arc<RwLock<KnowledgeStore>>) -> 
                             tool: sig_tool,
                             error_kind: sig_kind,
                             command: term.command_line.clone(),
+                            is_first_in_window,
                         }));
                     }
                     Ok(None) => {
@@ -70,6 +86,10 @@ pub async fn run(bus: Arc<EventBus>, knowledge: Arc<RwLock<KnowledgeStore>>) -> 
                         if let Err(e) = store.put_error(&rec) {
                             warn!(error = %e, "failed to insert ErrorRecord");
                         }
+
+                        // First occurrence is always first in window
+                        window_state.insert(sig_hash.clone(), now);
+
                         // Emit ErrorClassified event after insert
                         let _ = bus.publish(OrganismEvent::ErrorClassified(ErrorClassifiedEvent {
                             ts: now,
@@ -77,6 +97,7 @@ pub async fn run(bus: Arc<EventBus>, knowledge: Arc<RwLock<KnowledgeStore>>) -> 
                             tool: sig_tool,
                             error_kind: sig_kind,
                             command: term.command_line.clone(),
+                            is_first_in_window: true,
                         }));
                     }
                     Err(e) => {

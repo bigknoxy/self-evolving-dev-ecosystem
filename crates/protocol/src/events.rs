@@ -78,6 +78,14 @@ pub struct ErrorClassifiedEvent {
     pub tool: String,
     pub error_kind: String,
     pub command: String,
+    /// True if this is the first occurrence of this error within a 60-second window.
+    /// When false, the error has been seen recently and only occurrence count should be bumped.
+    #[serde(default = "default_is_first_in_window")]
+    pub is_first_in_window: bool,
+}
+
+fn default_is_first_in_window() -> bool {
+    true
 }
 
 /// Union of all event types
@@ -155,6 +163,7 @@ mod tests {
             tool: "cargo".to_string(),
             error_kind: "E0599".to_string(),
             command: "cargo build".to_string(),
+            is_first_in_window: true,
         };
         let json = serde_json::to_string(&evt).unwrap();
         let back: ErrorClassifiedEvent = serde_json::from_str(&json).unwrap();
@@ -162,6 +171,7 @@ mod tests {
         assert_eq!(back.tool, "cargo");
         assert_eq!(back.error_kind, "E0599");
         assert_eq!(back.command, "cargo build");
+        assert!(back.is_first_in_window);
     }
 
     #[test]
@@ -172,6 +182,7 @@ mod tests {
             tool: "rustc".to_string(),
             error_kind: "error".to_string(),
             command: "cargo test".to_string(),
+            is_first_in_window: true,
         });
         let json = serde_json::to_string(&evt).unwrap();
         let back: OrganismEvent = serde_json::from_str(&json).unwrap();
@@ -179,6 +190,7 @@ mod tests {
             OrganismEvent::ErrorClassified(e) => {
                 assert_eq!(e.hash, "test_hash");
                 assert_eq!(e.tool, "rustc");
+                assert!(e.is_first_in_window);
             }
             _ => panic!("expected ErrorClassified variant"),
         }
