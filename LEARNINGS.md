@@ -195,3 +195,11 @@ Gotchas:
 - Daemon binary-only crate → integration tests must mount each src module via `#[path = "../src/X.rs"] mod X;` + `#[allow(dead_code)]`. Forgot `clipboard` mount in two existing tests (`ipc_test.rs`, `event_ingest_test.rs`); compiler error `unresolved import crate::clipboard`. Fixed by adding the mount declaration.
 - Local Ollama subagent emitted `Regex::new(...).unwrap()` — banned by CLAUDE.md. Switched to `OnceLock` + `.expect()` with literal-justifies-panic message.
 - `ErrorRecord.last_command` is `String`, not `Option<String>` (per `crates/knowledge/src/types.rs:57`); local model assumed Option.
+## Completed: M3 File Logging — 2026-05-01
+
+Implemented all three M3 tasks:
+- M3-01: Added tracing-subscriber (with json feature) and tracing-appender to workspace deps
+- M3-02: Initialized file logger in main.rs with rolling daily files and guard binding
+- M3-03: Set rotation policy to DAILY with max_log_files(7) via Builder API
+
+Key insight: tracing-appender::rolling::Builder is available in 0.2.5 with full rotation config. Guard must be bound in main() scope to prevent log truncation on drop.
