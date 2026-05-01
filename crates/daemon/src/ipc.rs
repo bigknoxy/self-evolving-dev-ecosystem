@@ -150,7 +150,10 @@ async fn dispatch(
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
             let req_data: SuggestRequest =
-                serde_json::from_value(params).unwrap_or(SuggestRequest { error_key: None });
+                serde_json::from_value(params).unwrap_or(SuggestRequest {
+                    error_key: None,
+                    force: false,
+                });
             let mut store = knowledge.write().await;
 
             // Resolve error key: explicit, or most-recent error by last_seen

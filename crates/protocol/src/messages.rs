@@ -79,6 +79,9 @@ pub struct StatusResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SuggestRequest {
     pub error_key: Option<String>,
+    /// When true, regenerate suggestion even if cached
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// Suggest response payload
@@ -226,5 +229,38 @@ mod tests {
         assert_eq!(back.items[1].hash, "cafef00d");
         assert!(back.items[0].has_suggestion);
         assert!(!back.items[1].has_suggestion);
+    }
+
+    #[test]
+    fn test_suggest_request_default_force() {
+        let req = SuggestRequest {
+            error_key: Some("hash123".to_string()),
+            force: false,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: SuggestRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.error_key, Some("hash123".to_string()));
+        assert!(!back.force);
+    }
+
+    #[test]
+    fn test_suggest_request_force_true() {
+        let req = SuggestRequest {
+            error_key: Some("hash456".to_string()),
+            force: true,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: SuggestRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.error_key, Some("hash456".to_string()));
+        assert!(back.force);
+    }
+
+    #[test]
+    fn test_suggest_request_backwards_compat() {
+        // Old JSON without force field should default to false
+        let json = r#"{"error_key":"hash789"}"#;
+        let req: SuggestRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.error_key, Some("hash789".to_string()));
+        assert!(!req.force);
     }
 }

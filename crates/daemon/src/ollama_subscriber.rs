@@ -13,10 +13,76 @@ use tracing::{debug, info, warn};
 
 use organism_cortex::suggest_for_error;
 use organism_knowledge::KnowledgeStore;
-use organism_ollama::OllamaClient;
-use organism_protocol::OrganismEvent;
+use organism_ollama::{LlmClient, OllamaClient};
+use organism_protocol::{ErrorClassifiedEvent, OrganismEvent};
 
 use crate::event_bus::EventBus;
+
+/// Outcome of processing an error event for suggestion generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubscriberOutcome {
+    /// Suggestion was already cached; skipped generation.
+    SkippedCached,
+    /// Suggestion was generated and persisted.
+    Generated,
+    /// Skipped for a reason (error message).
+    Skipped(String),
+}
+
+/// Handle a single ErrorClassifiedEvent: check cache and generate suggestion if needed.
+///
+/// This function is testable and can be called with a mock LlmClient.
+/// Maintains in-memory seen set to avoid duplicate processing.
+pub async fn handle_event<C: LlmClient>(
+    event: ErrorClassifiedEvent,
+    store: &mut KnowledgeStore,
+    client: &C,
+    seen: &mut HashSet<String>,
+) -> Result<SubscriberOutcome> {
+    // Deduplicate: skip if we've already processed this error in this session
+    if seen.contains(&event.hash) {
+        debug!(hash = %event.hash, "ollama_subscriber: skipping duplicate error");
+        return Ok(SubscriberOutcome::Skipped(
+            "duplicate in session".to_string(),
+        ));
+    }
+    seen.insert(event.hash.clone());
+
+    // Check if suggestion is already cached
+    match store.get_suggestion(&event.hash) {
+        Ok(Some(_)) => {
+            debug!(hash = %event.hash, "ollama_subscriber: suggestion cached for hash");
+            return Ok(SubscriberOutcome::SkippedCached);
+        }
+        Err(err) => {
+            return Ok(SubscriberOutcome::Skipped(format!(
+                "cache check failed: {}",
+                err
+            )));
+        }
+        Ok(None) => {}
+    }
+
+    // Call Ollama to generate suggestion
+    match suggest_for_error(client, store, &event.hash).await {
+        Ok(text) => {
+            // Persist the suggestion
+            if let Err(e) = store.put_suggestion(&event.hash, &text) {
+                warn!(error = %e, hash = %event.hash, "ollama_subscriber: failed to persist suggestion");
+                return Ok(SubscriberOutcome::Skipped(format!("persist failed: {}", e)));
+            }
+            info!(hash = %event.hash, "ollama_subscriber: suggestion generated and cached");
+            Ok(SubscriberOutcome::Generated)
+        }
+        Err(e) => {
+            warn!(error = %e, hash = %event.hash, "ollama_subscriber: suggest_for_error failed");
+            Ok(SubscriberOutcome::Skipped(format!(
+                "generation failed: {}",
+                e
+            )))
+        }
+    }
+}
 
 pub async fn run(bus: Arc<EventBus>, knowledge: Arc<RwLock<KnowledgeStore>>) -> Result<()> {
     // Check if Ollama integration is enabled
@@ -42,43 +108,13 @@ pub async fn run(bus: Arc<EventBus>, knowledge: Arc<RwLock<KnowledgeStore>>) -> 
     loop {
         match rx.recv().await {
             Ok(OrganismEvent::ErrorClassified(e)) => {
-                // Deduplicate: skip if we've already processed this error
-                if seen.contains(&e.hash) {
-                    debug!(hash = %e.hash, "ollama_subscriber: skipping duplicate error");
+                // Only process if this is the first occurrence in the 60-second window
+                if !e.is_first_in_window {
+                    debug!(hash = %e.hash, "ollama_subscriber: skipping duplicate within window");
                     continue;
                 }
-                seen.insert(e.hash.clone());
-
-                // Check if suggestion is already cached
-                {
-                    let mut store = knowledge.write().await;
-                    match store.get_suggestion(&e.hash) {
-                        Ok(Some(_)) => {
-                            debug!(hash = %e.hash, "ollama_subscriber: suggestion already cached");
-                            continue;
-                        }
-                        Err(err) => {
-                            warn!(error = %err, hash = %e.hash, "ollama_subscriber: failed to check cache");
-                        }
-                        Ok(None) => {}
-                    }
-                }
-
-                // Call Ollama to generate suggestion
                 let mut store = knowledge.write().await;
-                match suggest_for_error(&client, &mut store, &e.hash).await {
-                    Ok(text) => {
-                        // Persist the suggestion
-                        if let Err(e2) = store.put_suggestion(&e.hash, &text) {
-                            warn!(error = %e2, hash = %e.hash, "ollama_subscriber: failed to persist suggestion");
-                        } else {
-                            info!(hash = %e.hash, "ollama_subscriber: suggestion generated and cached");
-                        }
-                    }
-                    Err(e2) => {
-                        warn!(error = %e2, hash = %e.hash, "ollama_subscriber: suggest_for_error failed");
-                    }
-                }
+                let _ = handle_event(e, &mut store, &client, &mut seen).await;
             }
             Ok(_) => {
                 debug!("ollama_subscriber: ignoring non-error-classified event");
@@ -93,4 +129,152 @@ pub async fn run(bus: Arc<EventBus>, knowledge: Arc<RwLock<KnowledgeStore>>) -> 
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use organism_knowledge::ErrorRecord;
+    use tempfile::TempDir;
+
+    struct MockLlmClient {
+        response: String,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmClient for MockLlmClient {
+        async fn generate(&self, _prompt: &str) -> Result<String> {
+            Ok(self.response.clone())
+        }
+    }
+
+    struct FailingLlmClient;
+
+    #[async_trait::async_trait]
+    impl LlmClient for FailingLlmClient {
+        async fn generate(&self, _prompt: &str) -> Result<String> {
+            Err(anyhow::anyhow!("LLM unavailable"))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_event_cached_suggestion() {
+        let tmp = TempDir::new().expect("tempdir created");
+        let mut store = KnowledgeStore::open(tmp.path()).expect("store opened");
+
+        let error = ErrorRecord {
+            tool: "cargo".to_string(),
+            kind: "E0599".to_string(),
+            hash: "test_hash".to_string(),
+            raw_excerpt: "no method named `foo`".to_string(),
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+            occurrences: 1,
+            last_command: "cargo build".to_string(),
+        };
+        store.put_error(&error).expect("error stored");
+        store
+            .put_suggestion("test_hash", "Try implementing the trait.")
+            .expect("suggestion stored");
+
+        let event = ErrorClassifiedEvent {
+            ts: Utc::now(),
+            hash: "test_hash".to_string(),
+            tool: "cargo".to_string(),
+            error_kind: "E0599".to_string(),
+            command: "cargo build".to_string(),
+            is_first_in_window: true,
+        };
+
+        let mock = MockLlmClient {
+            response: "Should not be called".to_string(),
+        };
+        let mut seen = HashSet::new();
+
+        let outcome = handle_event(event, &mut store, &mock, &mut seen)
+            .await
+            .expect("outcome");
+        assert_eq!(outcome, SubscriberOutcome::SkippedCached);
+    }
+
+    #[tokio::test]
+    async fn test_handle_event_generates_suggestion() {
+        let tmp = TempDir::new().expect("tempdir created");
+        let mut store = KnowledgeStore::open(tmp.path()).expect("store opened");
+
+        let error = ErrorRecord {
+            tool: "cargo".to_string(),
+            kind: "E0599".to_string(),
+            hash: "test_hash2".to_string(),
+            raw_excerpt: "no method".to_string(),
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+            occurrences: 1,
+            last_command: "cargo build".to_string(),
+        };
+        store.put_error(&error).expect("error stored");
+
+        let event = ErrorClassifiedEvent {
+            ts: Utc::now(),
+            hash: "test_hash2".to_string(),
+            tool: "cargo".to_string(),
+            error_kind: "E0599".to_string(),
+            command: "cargo build".to_string(),
+            is_first_in_window: true,
+        };
+
+        let mock = MockLlmClient {
+            response: "Generated suggestion".to_string(),
+        };
+        let mut seen = HashSet::new();
+
+        let outcome = handle_event(event, &mut store, &mock, &mut seen)
+            .await
+            .expect("outcome");
+        assert_eq!(outcome, SubscriberOutcome::Generated);
+
+        // Verify suggestion was persisted
+        let stored = store.get_suggestion("test_hash2").expect("get call");
+        assert!(stored.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_handle_event_llm_error() {
+        let tmp = TempDir::new().expect("tempdir created");
+        let mut store = KnowledgeStore::open(tmp.path()).expect("store opened");
+
+        let error = ErrorRecord {
+            tool: "cargo".to_string(),
+            kind: "E0599".to_string(),
+            hash: "test_hash3".to_string(),
+            raw_excerpt: "no method".to_string(),
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+            occurrences: 1,
+            last_command: "cargo build".to_string(),
+        };
+        store.put_error(&error).expect("error stored");
+
+        let event = ErrorClassifiedEvent {
+            ts: Utc::now(),
+            hash: "test_hash3".to_string(),
+            tool: "cargo".to_string(),
+            error_kind: "E0599".to_string(),
+            command: "cargo build".to_string(),
+            is_first_in_window: true,
+        };
+
+        let mut seen = HashSet::new();
+
+        let outcome = handle_event(event, &mut store, &FailingLlmClient, &mut seen)
+            .await
+            .expect("outcome");
+        match outcome {
+            SubscriberOutcome::Skipped(ref reason) => {
+                assert!(reason.contains("generation failed"));
+            }
+            _ => panic!("Expected Skipped outcome, got {:?}", outcome),
+        }
+    }
 }
