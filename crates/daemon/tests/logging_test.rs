@@ -9,7 +9,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use tokio::time::timeout;
 
 use organism_knowledge::KnowledgeStore;
@@ -70,8 +70,16 @@ async fn logging_test_creates_log_file() {
     let serve_bus = bus.clone();
     let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
+    let (_shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
     let server_handle = tokio::spawn(async move {
-        let _ = ipc::serve(serve_state, serve_bus, serve_knowledge, serve_socket).await;
+        let _ = ipc::serve(
+            serve_state,
+            serve_bus,
+            serve_knowledge,
+            serve_socket,
+            shutdown_rx,
+        )
+        .await;
     });
 
     // Wait for socket to be created

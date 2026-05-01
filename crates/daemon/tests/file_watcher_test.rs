@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tempfile::TempDir;
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{broadcast, RwLock};
 use tokio::time::timeout;
 
 #[cfg(not(target_os = "macos"))]
@@ -60,7 +60,11 @@ async fn watches_file_create() {
     let root = dir.path().to_path_buf();
     let (bus, state) = make_bus_and_state();
     let mut rx = bus.subscribe();
-    let (tx, shutdown_rx) = oneshot::channel::<()>();
+    let (tx, shutdown_rx) = {
+        let (t, _) = broadcast::channel::<()>(1);
+        let r = t.subscribe();
+        (t, r)
+    };
 
     let handle = tokio::spawn(sensors::file::watch(
         bus.clone(),
@@ -101,7 +105,11 @@ async fn ignores_target_directory() {
     std::fs::create_dir(root.join("target")).unwrap();
     let (bus, state) = make_bus_and_state();
     let mut rx = bus.subscribe();
-    let (tx, shutdown_rx) = oneshot::channel::<()>();
+    let (tx, shutdown_rx) = {
+        let (t, _) = broadcast::channel::<()>(1);
+        let r = t.subscribe();
+        (t, r)
+    };
 
     let handle = tokio::spawn(sensors::file::watch(
         bus.clone(),
@@ -127,7 +135,11 @@ async fn debounces_rapid_modifies() {
     let root = dir.path().to_path_buf();
     let (bus, state) = make_bus_and_state();
     let mut rx = bus.subscribe();
-    let (tx, shutdown_rx) = oneshot::channel::<()>();
+    let (tx, shutdown_rx) = {
+        let (t, _) = broadcast::channel::<()>(1);
+        let r = t.subscribe();
+        (t, r)
+    };
 
     let handle = tokio::spawn(sensors::file::watch(
         bus.clone(),
@@ -173,7 +185,7 @@ async fn shutdown_signal_stops_watcher() {
     let dir = TempDir::new().unwrap();
     let root = dir.path().to_path_buf();
     let (bus, state) = make_bus_and_state();
-    let (tx, shutdown_rx) = oneshot::channel::<()>();
+    let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
 
     let handle = tokio::spawn(sensors::file::watch(
         bus.clone(),
@@ -183,7 +195,7 @@ async fn shutdown_signal_stops_watcher() {
     ));
 
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let _ = tx.send(());
+    let _ = shutdown_tx.send(());
 
     let joined = timeout(Duration::from_millis(800), handle).await;
     assert!(joined.is_ok(), "watcher did not stop within 800ms");

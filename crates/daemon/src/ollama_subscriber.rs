@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Result;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, info, warn};
 
 use organism_cortex::suggest_for_error;
@@ -84,7 +84,11 @@ pub async fn handle_event<C: LlmClient>(
     }
 }
 
-pub async fn run(bus: Arc<EventBus>, knowledge: Arc<RwLock<KnowledgeStore>>) -> Result<()> {
+pub async fn run(
+    bus: Arc<EventBus>,
+    knowledge: Arc<RwLock<KnowledgeStore>>,
+    mut shutdown: broadcast::Receiver<()>,
+) -> Result<()> {
     // Check if Ollama integration is enabled
     let ollama_enabled = std::env::var("OLLAMA_ENABLED")
         .unwrap_or_else(|_| "0".to_string())
@@ -106,7 +110,13 @@ pub async fn run(bus: Arc<EventBus>, knowledge: Arc<RwLock<KnowledgeStore>>) -> 
     let mut seen: HashSet<String> = HashSet::new();
 
     loop {
-        match rx.recv().await {
+        tokio::select! {
+            _ = shutdown.recv() => {
+                debug!("ollama_subscriber received shutdown signal");
+                break;
+            }
+            msg = rx.recv() => {
+        match msg {
             Ok(OrganismEvent::ErrorClassified(e)) => {
                 // Only process if this is the first occurrence in the 60-second window
                 if !e.is_first_in_window {
@@ -127,7 +137,10 @@ pub async fn run(bus: Arc<EventBus>, knowledge: Arc<RwLock<KnowledgeStore>>) -> 
                 break;
             }
         }
+            }
+        }
     }
+    debug!("ollama_subscriber stopped");
     Ok(())
 }
 

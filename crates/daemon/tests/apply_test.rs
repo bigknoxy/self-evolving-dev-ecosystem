@@ -10,7 +10,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use tokio::time::timeout;
 
 use organism_knowledge::KnowledgeStore;
@@ -76,8 +76,16 @@ async fn apply_dry_returns_patch_message() {
     let serve_bus = bus.clone();
     let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
+    let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
     let server_handle = tokio::spawn(async move {
-        let _ = ipc::serve(serve_state, serve_bus, serve_knowledge, serve_socket).await;
+        let _ = ipc::serve(
+            serve_state,
+            serve_bus,
+            serve_knowledge,
+            serve_socket,
+            shutdown_rx,
+        )
+        .await;
     });
 
     for _ in 0..50 {
@@ -105,6 +113,7 @@ async fn apply_dry_returns_patch_message() {
     assert!(msg.contains("-old"), "message should contain diff: {}", msg);
     assert!(msg.contains("+new"), "message should contain diff: {}", msg);
 
+    let _ = shutdown_tx.send(());
     server_handle.abort();
 }
 
@@ -121,8 +130,16 @@ async fn apply_unknown_key_errors() {
     let serve_bus = bus.clone();
     let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
+    let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
     let server_handle = tokio::spawn(async move {
-        let _ = ipc::serve(serve_state, serve_bus, serve_knowledge, serve_socket).await;
+        let _ = ipc::serve(
+            serve_state,
+            serve_bus,
+            serve_knowledge,
+            serve_socket,
+            shutdown_rx,
+        )
+        .await;
     });
 
     for _ in 0..50 {
@@ -141,6 +158,7 @@ async fn apply_unknown_key_errors() {
     assert!(err.is_some(), "expected error response, got {:?}", resp);
     assert!(err.unwrap().contains("no cached suggestion"));
 
+    let _ = shutdown_tx.send(());
     server_handle.abort();
 }
 
@@ -157,8 +175,16 @@ async fn apply_rejects_path_traversal_key() {
     let serve_bus = bus.clone();
     let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
+    let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
     let server_handle = tokio::spawn(async move {
-        let _ = ipc::serve(serve_state, serve_bus, serve_knowledge, serve_socket).await;
+        let _ = ipc::serve(
+            serve_state,
+            serve_bus,
+            serve_knowledge,
+            serve_socket,
+            shutdown_rx,
+        )
+        .await;
     });
 
     for _ in 0..50 {
@@ -177,5 +203,6 @@ async fn apply_rejects_path_traversal_key() {
     assert!(err.is_some(), "expected error response, got {:?}", resp);
     assert!(err.unwrap().contains("invalid error_key"));
 
+    let _ = shutdown_tx.send(());
     server_handle.abort();
 }

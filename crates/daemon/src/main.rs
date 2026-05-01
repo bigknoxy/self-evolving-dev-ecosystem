@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use tokio::sync::broadcast;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -46,6 +47,31 @@ async fn main() -> anyhow::Result<()> {
     // NOTE: Dropping _log_guard truncates pending log writes.
     // The guard must be held for the entire daemon lifetime (main() scope).
 
+    // Create shutdown broadcast channel (capacity 1)
+    let (shutdown_tx, _) = broadcast::channel::<()>(1);
+
+    // Spawn signal handler (Unix only)
+    #[cfg(unix)]
+    {
+        let signal_tx = shutdown_tx.clone();
+        tokio::spawn(async move {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("failed to create SIGTERM handler");
+            let mut sigint =
+                signal(SignalKind::interrupt()).expect("failed to create SIGINT handler");
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    info!("SIGTERM received");
+                }
+                _ = sigint.recv() => {
+                    info!("SIGINT received");
+                }
+            }
+            let _ = signal_tx.send(());
+        });
+    }
+
     let daemon = Daemon::new(data_dir.clone())?;
 
     {
@@ -57,26 +83,29 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    // Spawn IPC server.
+    // Spawn IPC server with shutdown channel
     let socket_path = ipc::socket_path_for(&data_dir);
     let ipc_state = daemon.state.clone();
     let ipc_bus = daemon.bus.clone();
     let ipc_knowledge = daemon.knowledge.clone();
     let ipc_socket = socket_path.clone();
+    let ipc_shutdown = shutdown_tx.subscribe();
     tokio::spawn(async move {
-        if let Err(e) = ipc::serve(ipc_state, ipc_bus, ipc_knowledge, ipc_socket).await {
+        if let Err(e) =
+            ipc::serve(ipc_state, ipc_bus, ipc_knowledge, ipc_socket, ipc_shutdown).await
+        {
             tracing::error!(error = %e, "ipc server stopped");
         }
     });
 
-    // Spawn filesystem watcher rooted at the daemon's launch directory.
+    // Spawn filesystem watcher rooted at the daemon's launch directory
     let watch_root = std::env::current_dir()?;
-    let (file_shutdown_tx, file_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let watch_bus = daemon.bus.clone();
     let watch_state = daemon.state.clone();
-    let file_handle = tokio::spawn(async move {
+    let file_shutdown = shutdown_tx.subscribe();
+    tokio::spawn(async move {
         if let Err(e) =
-            sensors::file::watch(watch_bus, watch_state, watch_root, file_shutdown_rx).await
+            sensors::file::watch(watch_bus, watch_state, watch_root, file_shutdown).await
         {
             tracing::error!(error = %e, "file watcher stopped with error");
         }
@@ -86,8 +115,9 @@ async fn main() -> anyhow::Result<()> {
     // persists ErrorRecord entries.
     let err_bus = daemon.bus.clone();
     let err_knowledge = daemon.knowledge.clone();
+    let err_shutdown = shutdown_tx.subscribe();
     tokio::spawn(async move {
-        if let Err(e) = error_subscriber::run(err_bus, err_knowledge).await {
+        if let Err(e) = error_subscriber::run(err_bus, err_knowledge, err_shutdown).await {
             tracing::error!(error = %e, "error_subscriber stopped with error");
         }
     });
@@ -95,8 +125,10 @@ async fn main() -> anyhow::Result<()> {
     // Spawn Ollama subscriber: generates LLM suggestions for errors (if enabled).
     let ollama_bus = daemon.bus.clone();
     let ollama_knowledge = daemon.knowledge.clone();
+    let ollama_shutdown = shutdown_tx.subscribe();
     tokio::spawn(async move {
-        if let Err(e) = ollama_subscriber::run(ollama_bus, ollama_knowledge).await {
+        if let Err(e) = ollama_subscriber::run(ollama_bus, ollama_knowledge, ollama_shutdown).await
+        {
             tracing::error!(error = %e, "ollama_subscriber stopped with error");
         }
     });
@@ -104,13 +136,10 @@ async fn main() -> anyhow::Result<()> {
     // Run event loop (keeps daemon alive); exits on ctrl_c.
     daemon.run_event_loop().await;
 
-    // Signal the file watcher to stop and join.
-    let _ = file_shutdown_tx.send(());
-    let _ = file_handle.await;
-
     // Best-effort cleanup of socket file on shutdown.
     let _ = std::fs::remove_file(&socket_path);
 
+    info!("Organism daemon stopped");
     Ok(())
 }
 

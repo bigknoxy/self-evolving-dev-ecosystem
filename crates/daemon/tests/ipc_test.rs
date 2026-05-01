@@ -11,7 +11,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use tokio::time::timeout;
 
 use organism_knowledge::KnowledgeStore;
@@ -81,8 +81,16 @@ async fn ipc_status_sleep_wake_log_flow() {
     let serve_bus = bus.clone();
     let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
+    let (_shutdown_tx, shutdown_rx) = broadcast::channel(1);
     let server_handle = tokio::spawn(async move {
-        let _ = ipc::serve(serve_state, serve_bus, serve_knowledge, serve_socket).await;
+        let _ = ipc::serve(
+            serve_state,
+            serve_bus,
+            serve_knowledge,
+            serve_socket,
+            shutdown_rx,
+        )
+        .await;
     });
 
     // Wait briefly for the listener to bind.

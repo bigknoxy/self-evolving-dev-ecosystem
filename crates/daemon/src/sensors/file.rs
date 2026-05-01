@@ -12,7 +12,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use notify::{recommended_watcher, EventKind, RecursiveMode, Watcher};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, info, warn};
 
 use organism_protocol::{EventContext, FileEvent, FileEventType, OrganismEvent};
@@ -56,12 +56,12 @@ fn map_kind(kind: &EventKind) -> Option<FileEventType> {
 
 /// Watch `root` for filesystem changes, publishing debounced events to `bus`.
 /// Records each emitted event into `state` before publishing.
-/// Exits cleanly when `shutdown` resolves.
+/// Exits cleanly when `shutdown` signal is received.
 pub async fn watch(
     bus: Arc<EventBus>,
     state: Arc<RwLock<DaemonState>>,
     root: PathBuf,
-    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+    mut shutdown: broadcast::Receiver<()>,
 ) -> Result<()> {
     info!(?root, "file watcher starting");
 
@@ -102,7 +102,7 @@ pub async fn watch(
     loop {
         tokio::select! {
             biased;
-            _ = &mut shutdown => {
+            _ = shutdown.recv() => {
                 info!("file watcher shutdown signal received");
                 break;
             }
