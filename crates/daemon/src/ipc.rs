@@ -12,8 +12,8 @@ use tokio::net::{UnixListener, UnixStream};
 use tracing::{debug, error, info, warn};
 
 use organism_protocol::{
-    ApplyMode, ApplyRequest, ApplyResponse, Envelope, OrganismEvent, SuggestRequest,
-    SuggestResponse,
+    ApplyMode, ApplyRequest, ApplyResponse, Envelope, ErrorsRequest, ErrorsResponse,
+    ErrorSummaryWire, OrganismEvent, SuggestRequest, SuggestResponse,
 };
 
 use crate::clipboard;
@@ -182,6 +182,43 @@ async fn dispatch(
                 &req.id,
                 serde_json::to_value(SuggestResponse { text, cached }).unwrap(),
             )
+        }
+        "errors" => {
+            let params = req
+                .payload
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let req_data: ErrorsRequest =
+                serde_json::from_value(params).unwrap_or(ErrorsRequest { limit: None });
+
+            let store = knowledge.read().await;
+            let limit = req_data.limit.unwrap_or(20);
+            match store.list_errors_summary(limit) {
+                Ok(summaries) => {
+                    let items: Vec<ErrorSummaryWire> = summaries
+                        .into_iter()
+                        .map(|s| ErrorSummaryWire {
+                            hash: s.hash,
+                            command: s.last_command,
+                            occurrences: s.occurrences,
+                            last_seen: s.last_seen.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                            has_suggestion: s.has_suggestion,
+                        })
+                        .collect();
+                    let resp = ErrorsResponse { items };
+                    match serde_json::to_value(resp) {
+                        Ok(v) => Envelope::ok_response(&req.id, v),
+                        Err(e) => {
+                            Envelope::error_response(&req.id, &format!("response serialize failed: {}", e))
+                        }
+                    }
+                }
+                Err(e) => Envelope::error_response(
+                    &req.id,
+                    &format!("failed to list errors: {}", e),
+                ),
+            }
         }
         "apply" => {
             let params = req
