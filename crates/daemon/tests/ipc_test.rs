@@ -234,3 +234,111 @@ async fn ipc_feedback_flow() {
 
     server_handle.abort();
 }
+
+#[tokio::test]
+async fn ipc_apply_stage_auto_records_feedback() {
+    let tmp = TempDir::new().expect("tempdir");
+    let socket_path = tmp.path().join("daemon.sock");
+
+    let state = Arc::new(RwLock::new(DaemonState::new()));
+    let bus = Arc::new(EventBus::new(64));
+    let knowledge = Arc::new(RwLock::new(KnowledgeStore::open(tmp.path()).unwrap()));
+
+    // Seed an error and suggestion into knowledge store
+    let error_hash = "def456789abcdef";
+    let suggestion_text = "Add #[derive(Debug)]\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,1 +1,2 @@\n+#[derive(Debug)]";
+    {
+        let mut store = knowledge.write().await;
+        let err = organism_knowledge::ErrorRecord {
+            tool: "rustc".to_string(),
+            kind: "E0599".to_string(),
+            hash: error_hash.to_string(),
+            raw_excerpt: "error".to_string(),
+            first_seen: chrono::Utc::now(),
+            last_seen: chrono::Utc::now(),
+            occurrences: 1,
+            last_command: "cargo build".to_string(),
+        };
+        store.put_error(&err).expect("put error");
+        store
+            .put_suggestion(error_hash, suggestion_text)
+            .expect("put suggestion");
+    }
+
+    let serve_state = state.clone();
+    let serve_bus = bus.clone();
+    let serve_knowledge = knowledge.clone();
+    let serve_socket = socket_path.clone();
+    let (_shutdown_tx, shutdown_rx) = broadcast::channel(1);
+    let server_handle = tokio::spawn(async move {
+        let _ = ipc::serve(
+            serve_state,
+            serve_bus,
+            serve_knowledge,
+            serve_socket,
+            shutdown_rx,
+        )
+        .await;
+    });
+
+    // Wait briefly for the listener to bind.
+    for _ in 0..50 {
+        if socket_path.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(socket_path.exists(), "socket file should be created");
+
+    // Send apply --stage request
+    let stream = UnixStream::connect(&socket_path).await.expect("connect");
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+
+    let env = Envelope::request(
+        "apply",
+        serde_json::json!({
+            "error_key": error_hash,
+            "mode": "stage"
+        }),
+    );
+    let mut buf = serde_json::to_string(&env).unwrap();
+    buf.push('\n');
+    write_half.write_all(buf.as_bytes()).await.expect("write");
+    write_half.shutdown().await.ok();
+
+    let mut line = String::new();
+    timeout(RECV_TIMEOUT, reader.read_line(&mut line))
+        .await
+        .expect("recv timeout")
+        .expect("read");
+    let resp: Envelope = serde_json::from_str(line.trim()).expect("parse envelope");
+
+    // Check for errors in response
+    if let Some(err) = resp.payload.get("error").and_then(|v| v.as_str()) {
+        panic!("apply response error: {}", err);
+    }
+
+    // Verify auto-recorded feedback was written
+    let stored_feedback = {
+        let store = knowledge.read().await;
+        store.list_feedback().expect("list feedback")
+    };
+    assert_eq!(
+        stored_feedback.len(),
+        1,
+        "should have auto-recorded 1 feedback"
+    );
+    assert_eq!(stored_feedback[0].error_hash, error_hash);
+    assert_eq!(
+        stored_feedback[0].verdict,
+        organism_knowledge::Verdict::Accepted
+    );
+    assert!(stored_feedback[0]
+        .note
+        .as_ref()
+        .unwrap()
+        .contains("auto-recorded"));
+
+    server_handle.abort();
+}

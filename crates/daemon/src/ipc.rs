@@ -280,10 +280,29 @@ async fn dispatch(
                     );
                 }
             };
-            drop(store);
 
             let plan = extract_plan(&suggestion);
             let resp = build_apply_response(&plan, req_data.mode, &req_data.error_key);
+
+            // Auto-record Accepted feedback when apply --stage succeeds
+            if req_data.mode == ApplyMode::Stage {
+                // Hash suggestion text for feedback record
+                let mut hasher = sha2::Sha256::new();
+                hasher.update(suggestion.as_bytes());
+                let digest = hasher.finalize();
+                let suggestion_hash = hex::encode(digest);
+
+                let fb = FeedbackRecord {
+                    error_hash: req_data.error_key.clone(),
+                    suggestion_hash,
+                    verdict: Verdict::Accepted,
+                    note: Some("auto-recorded from apply --stage".to_string()),
+                    ts: chrono::Utc::now(),
+                };
+
+                let _ = store.put_feedback(&fb);
+            }
+
             match serde_json::to_value(resp) {
                 Ok(v) => Envelope::ok_response(&req.id, v),
                 Err(e) => {
