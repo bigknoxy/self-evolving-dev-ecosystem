@@ -4,8 +4,8 @@ pub mod messages;
 pub use events::*;
 pub use messages::{
     ApplyMode, ApplyRequest, ApplyResponse, Envelope, ErrorSummaryWire, ErrorsRequest,
-    ErrorsResponse, FeedbackRequest, FeedbackResponse, MessageType, StatusResponse, SuggestRequest,
-    SuggestResponse,
+    ErrorsResponse, FeedbackRequest, FeedbackResponse, MessageType, PlanItemWire, StatusResponse,
+    SuggestRequest, SuggestResponse,
 };
 
 #[cfg(test)]
