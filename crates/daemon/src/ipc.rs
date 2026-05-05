@@ -582,12 +582,21 @@ fn build_apply_response_multi(suggestion: &str, mode: ApplyMode, error_key: &str
         // Single plan: use old format with full content
         let first = &wire_plans[0];
         let msg = match &first.kind[..] {
-            "patch" => format!("diff (dry-run):\n\n{}", first.body),
+            "patch" => {
+                if mode == ApplyMode::Dry {
+                    format!("diff (dry-run):\n\n{}", first.body)
+                } else {
+                    format!("patch written. apply with: git apply {}",
+                        first.artifact_path.as_deref().unwrap_or("<path>"))
+                }
+            }
             "shell" => {
-                if mode == ApplyMode::Stage {
+                if mode == ApplyMode::Dry {
+                    format!("would run:\n{}", first.body)
+                } else if first.clipboard {
                     format!("copied to clipboard:\n{}", first.body)
                 } else {
-                    format!("would run:\n{}", first.body)
+                    format!("command:\n{}", first.body)
                 }
             }
             "note" => first.body.clone(),

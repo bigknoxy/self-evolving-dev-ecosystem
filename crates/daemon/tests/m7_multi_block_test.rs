@@ -232,3 +232,183 @@ async fn apply_stage_three_blocks_preserves_order() {
     let _ = shutdown_tx.send(());
     let _ = timeout(RECV_TIMEOUT, server_handle).await;
 }
+
+#[tokio::test]
+async fn apply_stage_single_shell_message() {
+    let tmp = TempDir::new().expect("tempdir");
+    let socket_path = tmp.path().join("daemon.sock");
+
+    // Seed: error + suggestion with only a single bash block
+    let hash = "abcd0001";
+    {
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+        let suggestion = "Run this:\n```bash\necho hello\n```\n";
+        store.put_suggestion(hash, suggestion).unwrap();
+    }
+
+    let state = Arc::new(RwLock::new(DaemonState::new()));
+    let bus = Arc::new(EventBus::new(64));
+    let knowledge = Arc::new(RwLock::new(KnowledgeStore::open(tmp.path()).unwrap()));
+
+    let serve_state = state.clone();
+    let serve_bus = bus.clone();
+    let serve_knowledge = knowledge.clone();
+    let serve_socket = socket_path.clone();
+    let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+    let server_handle = tokio::spawn(async move {
+        let _ = ipc::serve(
+            serve_state,
+            serve_bus,
+            serve_knowledge,
+            serve_socket,
+            shutdown_rx,
+        )
+        .await;
+    });
+
+    for _ in 0..50 {
+        if socket_path.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(socket_path.exists(), "socket file should be created");
+
+    // Apply with --stage mode for single shell
+    let req = Envelope::request(
+        "apply",
+        serde_json::json!({
+            "error_key": hash,
+            "mode": "stage"
+        }),
+    );
+
+    let resp = send(&socket_path, req).await;
+    let result = &resp.payload["result"];
+
+    // Single shell plan should exist
+    let plans = result
+        .get("plans")
+        .and_then(|p| p.as_array())
+        .expect("plans array");
+    assert_eq!(plans.len(), 1, "should have 1 plan");
+
+    let shell_plan = &plans[0];
+    assert_eq!(shell_plan["kind"], "shell");
+    assert_eq!(shell_plan["body"], "echo hello\n");
+
+    // Check the message: should be either "copied to clipboard:" or "command:"
+    // depending on clipboard flag
+    let message = result["message"].as_str().expect("message");
+    let clipboard = result["clipboard"].as_bool().expect("clipboard bool");
+
+    if clipboard {
+        assert!(
+            message.starts_with("copied to clipboard:"),
+            "message should mention clipboard when clipboard=true, got: {}",
+            message
+        );
+    } else {
+        assert!(
+            message.starts_with("command:"),
+            "message should say 'command:' when clipboard=false, got: {}",
+            message
+        );
+    }
+
+    // Shutdown
+    let _ = shutdown_tx.send(());
+    let _ = timeout(RECV_TIMEOUT, server_handle).await;
+}
+
+#[tokio::test]
+async fn apply_stage_single_patch_message() {
+    let tmp = TempDir::new().expect("tempdir");
+    let socket_path = tmp.path().join("daemon.sock");
+
+    // Seed: error + suggestion with only a single diff block
+    let hash = "def00001";
+    {
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+        let suggestion = "Apply this patch:\n```diff\n-old line\n+new line\n```\n";
+        store.put_suggestion(hash, suggestion).unwrap();
+    }
+
+    let state = Arc::new(RwLock::new(DaemonState::new()));
+    let bus = Arc::new(EventBus::new(64));
+    let knowledge = Arc::new(RwLock::new(KnowledgeStore::open(tmp.path()).unwrap()));
+
+    let serve_state = state.clone();
+    let serve_bus = bus.clone();
+    let serve_knowledge = knowledge.clone();
+    let serve_socket = socket_path.clone();
+    let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+    let server_handle = tokio::spawn(async move {
+        let _ = ipc::serve(
+            serve_state,
+            serve_bus,
+            serve_knowledge,
+            serve_socket,
+            shutdown_rx,
+        )
+        .await;
+    });
+
+    for _ in 0..50 {
+        if socket_path.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(socket_path.exists(), "socket file should be created");
+
+    // Apply with --stage mode for single patch
+    let req = Envelope::request(
+        "apply",
+        serde_json::json!({
+            "error_key": hash,
+            "mode": "stage"
+        }),
+    );
+
+    let resp = send(&socket_path, req).await;
+    let result = &resp.payload["result"];
+
+    // Single patch plan should exist
+    let plans = result
+        .get("plans")
+        .and_then(|p| p.as_array())
+        .expect("plans array");
+    assert_eq!(plans.len(), 1, "should have 1 plan");
+
+    let patch_plan = &plans[0];
+    assert_eq!(patch_plan["kind"], "patch");
+    assert_eq!(patch_plan["body"], "-old line\n+new line\n");
+
+    // Check the message: should mention "patch written" and include artifact_path
+    let message = result["message"].as_str().expect("message");
+    assert!(
+        message.contains("patch written"),
+        "message should mention 'patch written' in stage mode, got: {}",
+        message
+    );
+    assert!(
+        message.contains("git apply"),
+        "message should contain 'git apply' instruction, got: {}",
+        message
+    );
+
+    // artifact_path should be populated
+    let artifact_path = result
+        .get("artifact_path")
+        .and_then(|a| a.as_str())
+        .expect("artifact_path");
+    assert!(
+        !artifact_path.is_empty(),
+        "artifact_path should be populated for stage patch"
+    );
+
+    // Shutdown
+    let _ = shutdown_tx.send(());
+    let _ = timeout(RECV_TIMEOUT, server_handle).await;
+}
