@@ -586,8 +586,10 @@ fn build_apply_response_multi(suggestion: &str, mode: ApplyMode, error_key: &str
                 if mode == ApplyMode::Dry {
                     format!("diff (dry-run):\n\n{}", first.body)
                 } else {
-                    format!("patch written. apply with: git apply {}",
-                        first.artifact_path.as_deref().unwrap_or("<path>"))
+                    format!(
+                        "patch written. apply with: git apply {}",
+                        first.artifact_path.as_deref().unwrap_or("<path>")
+                    )
                 }
             }
             "shell" => {
