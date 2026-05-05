@@ -100,7 +100,16 @@ pub async fn run(
         return Ok(());
     }
 
-    let client = OllamaClient::new();
+    let client = match OllamaClient::new() {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(
+                "ollama_subscriber: failed to initialize OllamaClient: {}",
+                e
+            );
+            return Ok(());
+        }
+    };
     debug!(
         "ollama_subscriber: starting with base_url={}, model={}",
         client.base_url, client.model

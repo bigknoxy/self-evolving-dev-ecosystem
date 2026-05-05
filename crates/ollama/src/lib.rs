@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::net::IpAddr;
 use url::Url;
 
 #[derive(Debug, Clone)]
@@ -11,28 +12,29 @@ pub struct OllamaClient {
     pub http: reqwest::Client,
 }
 
-impl Default for OllamaClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Check if a hostname is a loopback address
+/// Check if a hostname is a loopback address.
+/// Recognizes:
+/// - "localhost" string literal
+/// - IPv4 loopback (127.0.0.0/8)
+/// - IPv6 loopback (::1)
+/// - IPv4-mapped IPv6 loopback (::ffff:127.x.x.x)
 fn is_loopback_host(host: &str) -> bool {
-    // Check exact loopback hosts
-    if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+    // Check localhost string first (fallback for URL hostname strings)
+    if host == "localhost" {
         return true;
     }
 
-    // Check 127.x.x.x range
-    if host.starts_with("127.") {
-        // Simple check for 127.*.*.* pattern
-        if let Some(rest) = host.strip_prefix("127.") {
-            // Ensure the rest looks like a valid IP (has dots and digits only)
-            if rest.chars().all(|c| c.is_numeric() || c == '.') {
-                return true;
+    // Try to parse as IP address
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        // Handle IPv4-mapped IPv6 addresses (e.g., ::ffff:127.0.0.1)
+        if let IpAddr::V6(v6) = ip {
+            if let Some(mapped_v4) = v6.to_ipv4_mapped() {
+                return mapped_v4.is_loopback();
             }
         }
+
+        // Handle standard loopback check (includes 127.0.0.0/8 for IPv4 and ::1 for IPv6)
+        return ip.is_loopback();
     }
 
     false
@@ -76,25 +78,19 @@ fn validate_base_url(base_url: &str) -> Result<()> {
 }
 
 impl OllamaClient {
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self> {
         let base_url =
             env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".to_string());
         let model = env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5-coder:7b".to_string());
 
         // Validate remote URL and warn/error as needed
-        if let Err(e) = validate_base_url(&base_url) {
-            // Only panic if OLLAMA_STRICT is set; otherwise just warn via tracing
-            if env::var("OLLAMA_STRICT").map(|v| v == "1").unwrap_or(false) {
-                panic!("{}", e);
-            }
-            // If not strict, the warning was already emitted by validate_base_url
-        }
+        validate_base_url(&base_url)?;
 
-        Self {
+        Ok(Self {
             base_url,
             model,
             http: reqwest::Client::new(),
-        }
+        })
     }
 
     pub async fn generate(&self, prompt: &str) -> Result<String> {
@@ -260,6 +256,30 @@ mod tests {
     }
 
     #[test]
+    fn test_ipv6_ipv4_mapped_loopback() {
+        // IPv4-mapped IPv6 loopback addresses should be recognized
+        assert!(is_loopback_host("::ffff:127.0.0.1"));
+        assert!(is_loopback_host("::ffff:127.0.0.2"));
+        assert!(is_loopback_host("::ffff:127.255.255.255"));
+    }
+
+    #[test]
+    fn test_ipv6_ipv4_mapped_non_loopback() {
+        // IPv4-mapped IPv6 non-loopback addresses should NOT be recognized
+        assert!(!is_loopback_host("::ffff:192.168.1.1"));
+        assert!(!is_loopback_host("::ffff:8.8.8.8"));
+        assert!(!is_loopback_host("::ffff:10.0.0.1"));
+    }
+
+    #[test]
+    fn test_is_loopback_malformed_ip() {
+        // Malformed IPs should be rejected
+        assert!(!is_loopback_host("127.0.0.0.1")); // extra octet
+        assert!(!is_loopback_host("127.0.0")); // incomplete
+        assert!(!is_loopback_host("not-an-ip"));
+    }
+
+    #[test]
     fn test_validate_local_url_no_warning() {
         let result = validate_base_url("http://localhost:11434");
         assert!(result.is_ok());
@@ -274,6 +294,12 @@ mod tests {
     #[test]
     fn test_ipv6_loopback_recognized() {
         let result = validate_base_url("http://[::1]:11434");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_ipv6_ipv4_mapped_loopback_url() {
+        let result = validate_base_url("http://[::ffff:127.0.0.1]:11434");
         assert!(result.is_ok());
     }
 
