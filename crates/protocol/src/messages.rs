@@ -143,6 +143,20 @@ pub struct ErrorsResponse {
     pub items: Vec<ErrorSummaryWire>,
 }
 
+/// Feedback request: user verdict on a suggestion
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FeedbackRequest {
+    pub error_key: String,
+    pub verdict: String,
+    pub note: Option<String>,
+}
+
+/// Feedback response: acknowledgement from daemon
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FeedbackResponse {
+    pub ok: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,5 +276,28 @@ mod tests {
         let req: SuggestRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.error_key, Some("hash789".to_string()));
         assert!(!req.force);
+    }
+
+    #[test]
+    fn test_feedback_request_accept_roundtrip() {
+        roundtrip(&FeedbackRequest {
+            error_key: "test_error".to_string(),
+            verdict: "accept".to_string(),
+            note: Some("Good fix".to_string()),
+        });
+    }
+
+    #[test]
+    fn test_feedback_request_reject_roundtrip() {
+        roundtrip(&FeedbackRequest {
+            error_key: "test_error".to_string(),
+            verdict: "reject".to_string(),
+            note: None,
+        });
+    }
+
+    #[test]
+    fn test_feedback_response_roundtrip() {
+        roundtrip(&FeedbackResponse { ok: true });
     }
 }
