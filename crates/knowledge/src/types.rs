@@ -64,6 +64,24 @@ pub struct SuggestionRecord {
     pub ts: DateTime<Utc>,
 }
 
+/// User verdict on a suggestion
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum Verdict {
+    Accepted,
+    Rejected,
+    Ignored,
+}
+
+/// A record of user feedback on a suggestion
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FeedbackRecord {
+    pub error_hash: String,
+    pub suggestion_hash: String,
+    pub verdict: Verdict,
+    pub note: Option<String>,
+    pub ts: DateTime<Utc>,
+}
+
 /// Key prefixes for the key-value store
 pub mod keys {
     pub const FIX_PREFIX: &str = "fix:";
@@ -72,4 +90,5 @@ pub mod keys {
     pub const STATS_PREFIX: &str = "stats:";
     pub const ERROR_PREFIX: &str = "error:";
     pub const SUGGESTION_PREFIX: &str = "suggestion:";
+    pub const FEEDBACK_PREFIX: &str = "feedback:";
 }
