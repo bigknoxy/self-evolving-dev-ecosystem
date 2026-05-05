@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::migrate::migrate_error;
 use crate::types::{
     keys, ErrorRecord, FeedbackRecord, FixRecord, PatternRecord, ProjectMeta, SuggestionRecord,
 };
@@ -137,7 +138,19 @@ impl KnowledgeStore {
     }
 
     pub fn get_error(&mut self, hash: &str) -> Result<Option<ErrorRecord>> {
-        self.get(&format!("{}{}", keys::ERROR_PREFIX, hash))
+        let key = format!("{}{}", keys::ERROR_PREFIX, hash);
+        if let Some(cached) = self.cache.get(&key) {
+            let raw = serde_json::from_str::<serde_json::Value>(cached)?;
+            return Ok(Some(migrate_error(raw)?));
+        }
+        let path = self.key_to_path(&key);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = fs::read_to_string(&path).with_context(|| format!("Reading {:?}", path))?;
+        self.cache.insert(key.clone(), content.clone());
+        let raw = serde_json::from_str::<serde_json::Value>(&content)?;
+        Ok(Some(migrate_error(raw)?))
     }
 
     pub fn put_error(&mut self, record: &ErrorRecord) -> Result<()> {

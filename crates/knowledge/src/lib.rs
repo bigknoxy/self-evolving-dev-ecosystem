@@ -1,6 +1,8 @@
+pub mod migrate;
 pub mod store;
 pub mod types;
 
+pub use migrate::migrate_error;
 pub use store::KnowledgeStore;
 pub use types::*;
 
