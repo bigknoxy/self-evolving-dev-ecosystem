@@ -8,7 +8,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::types::{keys, ErrorRecord, FixRecord, PatternRecord, ProjectMeta, SuggestionRecord};
+use crate::types::{
+    keys, ErrorRecord, FeedbackRecord, FixRecord, PatternRecord, ProjectMeta, SuggestionRecord,
+};
 
 /// Summary of an error for listing and display
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,11 +232,47 @@ impl KnowledgeStore {
         };
         self.put(&format!("{}{}", keys::SUGGESTION_PREFIX, hash), &rec)
     }
+
+    /// Store a feedback record to disk.
+    /// Filename: feedback_<error_hash>_<unix_timestamp>.json
+    /// Uses atomic_write to ensure file safety.
+    pub fn put_feedback(&mut self, fb: &FeedbackRecord) -> Result<()> {
+        let ts_unix = fb.ts.timestamp();
+        let key = format!("{}{}_{}", keys::FEEDBACK_PREFIX, fb.error_hash, ts_unix);
+        self.put(&key, fb)
+    }
+
+    /// List all feedback records in the knowledge store.
+    /// Silently skips any corrupted .json files in the feedback directory.
+    pub fn list_feedback(&self) -> Result<Vec<FeedbackRecord>> {
+        let mut records = Vec::new();
+        let safe_prefix = keys::FEEDBACK_PREFIX.replace([':', '/'], "_");
+
+        for entry in std::fs::read_dir(&self.data_dir)? {
+            let entry = entry?;
+            let fname = entry.file_name().to_string_lossy().into_owned();
+
+            if fname.starts_with(&safe_prefix) && fname.ends_with(".json") {
+                let path = entry.path();
+                // Try to read and deserialize; skip silently on error
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(rec) = serde_json::from_str::<FeedbackRecord>(&content) {
+                        records.push(rec);
+                    }
+                }
+            }
+        }
+
+        // Sort by timestamp descending (most recent first)
+        records.sort_by_key(|r| std::cmp::Reverse(r.ts));
+        Ok(records)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Verdict;
 
     #[test]
     fn test_put_and_get_suggestion() {
@@ -481,5 +519,98 @@ mod tests {
 
         assert!(target.exists());
         assert_eq!(fs::read(&target).unwrap().len(), content.len());
+    }
+
+    #[test]
+    fn test_put_and_get_feedback_roundtrip() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        let now = chrono::Utc::now();
+        let fb = FeedbackRecord {
+            error_hash: "error123".into(),
+            suggestion_hash: "sug456".into(),
+            verdict: Verdict::Accepted,
+            note: Some("looks good".into()),
+            ts: now,
+        };
+
+        store.put_feedback(&fb).unwrap();
+        let all = store.list_feedback().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].error_hash, "error123");
+        assert_eq!(all[0].verdict, Verdict::Accepted);
+        assert_eq!(all[0].note, Some("looks good".into()));
+    }
+
+    #[test]
+    fn test_list_feedback_multiple_per_hash() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        let now = chrono::Utc::now();
+        let hash = "sameerror";
+
+        // First feedback
+        let fb1 = FeedbackRecord {
+            error_hash: hash.into(),
+            suggestion_hash: "sug1".into(),
+            verdict: Verdict::Rejected,
+            note: None,
+            ts: now - chrono::Duration::seconds(10),
+        };
+
+        // Second feedback for same error
+        let fb2 = FeedbackRecord {
+            error_hash: hash.into(),
+            suggestion_hash: "sug2".into(),
+            verdict: Verdict::Accepted,
+            note: Some("better".into()),
+            ts: now,
+        };
+
+        store.put_feedback(&fb1).unwrap();
+        store.put_feedback(&fb2).unwrap();
+
+        let all = store.list_feedback().unwrap();
+        assert_eq!(all.len(), 2);
+        // Most recent first (sorted descending)
+        assert_eq!(all[0].verdict, Verdict::Accepted);
+        assert_eq!(all[1].verdict, Verdict::Rejected);
+    }
+
+    #[test]
+    fn test_list_feedback_empty() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        let all = store.list_feedback().unwrap();
+        assert_eq!(all.len(), 0);
+    }
+
+    #[test]
+    fn test_list_feedback_corrupt_file_skipped() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        // Put one valid feedback
+        let now = chrono::Utc::now();
+        let fb = FeedbackRecord {
+            error_hash: "error_valid".into(),
+            suggestion_hash: "sug_valid".into(),
+            verdict: Verdict::Ignored,
+            note: None,
+            ts: now,
+        };
+        store.put_feedback(&fb).unwrap();
+
+        // Manually create a corrupted feedback file
+        let corrupt_path = tmp.path().join("feedback_error_corrupt_12345.json");
+        fs::write(&corrupt_path, "{broken json").unwrap();
+
+        // list_feedback should skip the corrupt file and return only the valid one
+        let all = store.list_feedback().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].error_hash, "error_valid");
     }
 }

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use sha2::Digest;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast;
@@ -14,14 +15,15 @@ use tracing::{debug, error, info, warn};
 
 use organism_protocol::{
     ApplyMode, ApplyRequest, ApplyResponse, Envelope, ErrorSummaryWire, ErrorsRequest,
-    ErrorsResponse, OrganismEvent, SuggestRequest, SuggestResponse,
+    ErrorsResponse, FeedbackRequest, FeedbackResponse, OrganismEvent, SuggestRequest,
+    SuggestResponse,
 };
 
 use crate::clipboard;
 use crate::daemon::DaemonState;
 use crate::event_bus::EventBus;
 use organism_cortex::apply::{extract_plan, ApplyPlan};
-use organism_knowledge::KnowledgeStore;
+use organism_knowledge::{FeedbackRecord, KnowledgeStore, Verdict};
 use tokio::sync::RwLock;
 
 fn is_safe_error_key(key: &str) -> bool {
@@ -278,10 +280,29 @@ async fn dispatch(
                     );
                 }
             };
-            drop(store);
 
             let plan = extract_plan(&suggestion);
             let resp = build_apply_response(&plan, req_data.mode, &req_data.error_key);
+
+            // Auto-record Accepted feedback when apply --stage succeeds
+            if req_data.mode == ApplyMode::Stage {
+                // Hash suggestion text for feedback record
+                let mut hasher = sha2::Sha256::new();
+                hasher.update(suggestion.as_bytes());
+                let digest = hasher.finalize();
+                let suggestion_hash = hex::encode(digest);
+
+                let fb = FeedbackRecord {
+                    error_hash: req_data.error_key.clone(),
+                    suggestion_hash,
+                    verdict: Verdict::Accepted,
+                    note: Some("auto-recorded from apply --stage".to_string()),
+                    ts: chrono::Utc::now(),
+                };
+
+                let _ = store.put_feedback(&fb);
+            }
+
             match serde_json::to_value(resp) {
                 Ok(v) => Envelope::ok_response(&req.id, v),
                 Err(e) => {
@@ -322,6 +343,88 @@ async fn dispatch(
             }
             let _ = bus.publish(evt);
             Envelope::ok_response(&req.id, serde_json::json!({"ok": true, "recorded": true}))
+        }
+        "feedback" => {
+            let params = req
+                .payload
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let req_data: FeedbackRequest = match serde_json::from_value(params) {
+                Ok(r) => r,
+                Err(e) => {
+                    return Envelope::error_response(
+                        &req.id,
+                        &format!("invalid feedback request: {}", e),
+                    );
+                }
+            };
+
+            if !is_safe_error_key(&req_data.error_key) {
+                return Envelope::error_response(
+                    &req.id,
+                    "invalid error_key (must be 1-64 hex chars)",
+                );
+            }
+
+            let mut store = knowledge.write().await;
+            let suggestion = match store.get_suggestion(&req_data.error_key) {
+                Ok(Some(t)) => t,
+                Ok(None) => {
+                    return Envelope::error_response(
+                        &req.id,
+                        "no cached suggestion for that error_key",
+                    );
+                }
+                Err(e) => {
+                    return Envelope::error_response(
+                        &req.id,
+                        &format!("knowledge read failed: {}", e),
+                    );
+                }
+            };
+
+            // Hash suggestion text
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(suggestion.as_bytes());
+            let digest = hasher.finalize();
+            let suggestion_hash = hex::encode(digest);
+
+            // Map verdict string to enum
+            let verdict = match req_data.verdict.as_str() {
+                "accept" => Verdict::Accepted,
+                "reject" => Verdict::Rejected,
+                "ignore" => Verdict::Ignored,
+                _ => {
+                    return Envelope::error_response(
+                        &req.id,
+                        "invalid verdict (must be accept, reject, or ignore)",
+                    );
+                }
+            };
+
+            let fb = FeedbackRecord {
+                error_hash: req_data.error_key,
+                suggestion_hash,
+                verdict,
+                note: req_data.note,
+                ts: chrono::Utc::now(),
+            };
+
+            if let Err(e) = store.put_feedback(&fb) {
+                return Envelope::error_response(
+                    &req.id,
+                    &format!("failed to store feedback: {}", e),
+                );
+            }
+
+            let resp = FeedbackResponse { ok: true };
+            match serde_json::to_value(resp) {
+                Ok(v) => Envelope::ok_response(&req.id, v),
+                Err(e) => {
+                    Envelope::error_response(&req.id, &format!("response serialize failed: {}", e))
+                }
+            }
         }
         _ => Envelope::error_response(
             &req.id,
