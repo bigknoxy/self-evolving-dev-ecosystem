@@ -472,7 +472,8 @@ async fn cmd_errors(args: &[String]) -> Result<()> {
 
 async fn cmd_doctor() -> Result<()> {
     let dir = data_dir();
-    std::fs::create_dir_all(&dir)?;
+    // Best-effort: missing dir is fine, we'll just report empty counts.
+    let _ = std::fs::create_dir_all(&dir);
 
     let mut error_count = 0;
     let mut pattern_count = 0;
@@ -855,10 +856,7 @@ mod tests {
         assert!(store_dir.exists());
 
         // Manual scan logic: verify we can iterate the directory
-        let entries: Vec<_> = std::fs::read_dir(store_dir)
-            .unwrap()
-            .flatten()
-            .collect();
+        let entries: Vec<_> = std::fs::read_dir(store_dir).unwrap().flatten().collect();
         assert_eq!(entries.len(), 0, "Empty store should have no files");
     }
 
@@ -921,8 +919,7 @@ mod tests {
                 if file_name.starts_with("error_") && file_name.ends_with(".json") {
                     if let Ok(content) = std::fs::read_to_string(&path) {
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
-                            if let Some(schema_v) = value.get("schema_v").and_then(|v| v.as_u64())
-                            {
+                            if let Some(schema_v) = value.get("schema_v").and_then(|v| v.as_u64()) {
                                 if schema_v > 1 {
                                     migration_failures.push(format!(
                                         "{}: unsupported schema version {}",

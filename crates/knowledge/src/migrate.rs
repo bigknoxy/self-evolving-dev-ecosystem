@@ -1,5 +1,5 @@
-use anyhow::Result;
 use crate::ErrorRecord;
+use anyhow::Result;
 
 /// Handles migration of `ErrorRecord` deserialized from external formats.
 ///
@@ -17,7 +17,7 @@ pub fn migrate_error(raw: serde_json::Value) -> Result<ErrorRecord> {
 
     let schema_v = record.schema_v;
     if schema_v > 1 {
-        return anyhow::bail!(
+        anyhow::bail!(
             "Unsupported schema version {}: this client supports up to v1",
             schema_v
         );

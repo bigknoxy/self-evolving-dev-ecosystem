@@ -39,6 +39,7 @@ pub fn detect_patterns(events: &[EventRecord], min_frequency: u32) -> Vec<Patter
             first_seen: now,
             last_seen: now,
             examples: Vec::new(),
+            schema_v: 1,
         })
         .collect()
 }

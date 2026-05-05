@@ -194,6 +194,7 @@ mod tests {
             last_seen: Utc::now(),
             occurrences: 1,
             last_command: "cargo build".to_string(),
+            schema_v: 1,
         };
         store.put_error(&error).expect("error stored");
         store
@@ -234,6 +235,7 @@ mod tests {
             last_seen: Utc::now(),
             occurrences: 1,
             last_command: "cargo build".to_string(),
+            schema_v: 1,
         };
         store.put_error(&error).expect("error stored");
 
@@ -275,6 +277,7 @@ mod tests {
             last_seen: Utc::now(),
             occurrences: 1,
             last_command: "cargo build".to_string(),
+            schema_v: 1,
         };
         store.put_error(&error).expect("error stored");
 

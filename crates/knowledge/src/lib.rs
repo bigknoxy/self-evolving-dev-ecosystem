@@ -55,6 +55,7 @@ mod tests {
             first_seen: Utc::now(),
             last_seen: Utc::now(),
             examples: vec!["project-a".to_string()],
+            schema_v: 1,
         };
         store.put_pattern(&pattern).unwrap();
         let retrieved = store.get_pattern("pat1").unwrap().unwrap();
@@ -93,6 +94,7 @@ mod tests {
             last_seen: now,
             occurrences: 1,
             last_command: "cargo build".to_string(),
+            schema_v: 1,
         };
         store.put_error(&rec).unwrap();
         let got = store.get_error("deadbeef").unwrap().unwrap();

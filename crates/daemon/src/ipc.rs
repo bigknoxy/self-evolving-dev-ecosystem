@@ -297,6 +297,7 @@ async fn dispatch(
                     verdict: Verdict::Accepted,
                     note: Some("auto-recorded from apply --stage".to_string()),
                     ts: chrono::Utc::now(),
+                    schema_v: 1,
                 };
 
                 let _ = store.put_feedback(&fb);
@@ -408,6 +409,7 @@ async fn dispatch(
                 verdict,
                 note: req_data.note,
                 ts: chrono::Utc::now(),
+                schema_v: 1,
             };
 
             if let Err(e) = store.put_feedback(&fb) {
