@@ -260,6 +260,48 @@ fn parse_apply_args(args: &[String]) -> Result<(String, bool)> {
     Ok((key, stage))
 }
 
+/// Format and print all plans from ApplyResponse, with numbering.
+/// Handles both legacy single-plan responses and new multi-plan responses.
+fn format_apply_response(result: &serde_json::Value) {
+    // Check for new multi-plan format
+    if let Some(plans_array) = result.get("plans").and_then(|v| v.as_array()) {
+        if !plans_array.is_empty() {
+            let total = plans_array.len();
+            for (idx, plan) in plans_array.iter().enumerate() {
+                let kind = plan.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                let body = plan.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                let plan_num = idx + 1;
+
+                println!("[{}/{}] {}", plan_num, total, kind);
+                // Indent body by 4 spaces
+                for line in body.lines() {
+                    println!("    {}", line);
+                }
+
+                if let Some(artifact) = plan.get("artifact_path").and_then(|v| v.as_str()) {
+                    println!("    artifact: {}", artifact);
+                }
+
+                if idx < total - 1 {
+                    println!();
+                }
+            }
+            return;
+        }
+    }
+
+    // Fall back to legacy format for backward compat
+    let kind = result
+        .get("plan_kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let message = result.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    println!("[{}]\n{}", kind, message);
+    if let Some(p) = result.get("artifact_path").and_then(|v| v.as_str()) {
+        println!("\nartifact: {}", p);
+    }
+}
+
 async fn cmd_apply(args: &[String]) -> Result<()> {
     let (error_key, stage) = parse_apply_args(args)?;
     let mode = if stage { "stage" } else { "dry" };
@@ -274,15 +316,7 @@ async fn cmd_apply(args: &[String]) -> Result<()> {
     }
 
     let result = resp.payload.get("result").unwrap_or(&resp.payload);
-    let kind = result
-        .get("plan_kind")
-        .and_then(|v| v.as_str())
-        .unwrap_or("?");
-    let message = result.get("message").and_then(|v| v.as_str()).unwrap_or("");
-    println!("[{}]\n{}", kind, message);
-    if let Some(p) = result.get("artifact_path").and_then(|v| v.as_str()) {
-        println!("\nartifact: {}", p);
-    }
+    format_apply_response(result);
     Ok(())
 }
 
@@ -671,5 +705,53 @@ mod tests {
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let age = format_age(&fifty_nine_secs_ago);
         assert_eq!(age, "59s");
+    }
+
+    #[test]
+    fn format_apply_response_single_plan() {
+        // Test formatter with single plan
+        let response = serde_json::json!({
+            "plan_kind": "shell",
+            "artifact_path": null,
+            "clipboard": true,
+            "message": "copied to clipboard",
+            "plans": [
+                {
+                    "kind": "shell",
+                    "body": "brew install foo",
+                    "artifact_path": null,
+                    "clipboard": true
+                }
+            ]
+        });
+        // Just verify it doesn't panic (output goes to stdout)
+        format_apply_response(&response);
+    }
+
+    #[test]
+    fn format_apply_response_multi_plan() {
+        // Test formatter with multiple plans
+        let response = serde_json::json!({
+            "plan_kind": "shell",
+            "artifact_path": null,
+            "clipboard": false,
+            "message": "[1/2] shell + 1 more plan(s)",
+            "plans": [
+                {
+                    "kind": "shell",
+                    "body": "brew install foo",
+                    "artifact_path": null,
+                    "clipboard": false
+                },
+                {
+                    "kind": "patch",
+                    "body": "diff --git a/file b/file\n-old\n+new",
+                    "artifact_path": Some("/tmp/organism-abc-0.patch"),
+                    "clipboard": false
+                }
+            ]
+        });
+        // Just verify it doesn't panic
+        format_apply_response(&response);
     }
 }

@@ -108,6 +108,15 @@ pub enum ApplyMode {
     Stage,
 }
 
+/// Wire format for a single plan item
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PlanItemWire {
+    pub kind: String,
+    pub body: String,
+    pub artifact_path: Option<String>,
+    pub clipboard: bool,
+}
+
 /// Apply response payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplyResponse {
@@ -119,6 +128,10 @@ pub struct ApplyResponse {
     pub clipboard: bool,
     /// Human-readable summary for the CLI to print.
     pub message: String,
+    /// Multi-block plans: ordered list of all recognized plan items.
+    /// For backward compat with old clients, we also populate plan_kind/message/artifact_path from plans[0].
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub plans: Vec<PlanItemWire>,
 }
 
 /// Errors listing request payload
@@ -199,6 +212,7 @@ mod tests {
             artifact_path: Some("/tmp/x.patch".into()),
             clipboard: false,
             message: "ok".into(),
+            plans: vec![],
         };
         let json = serde_json::to_string(&resp).unwrap();
         let back: ApplyResponse = serde_json::from_str(&json).unwrap();
@@ -299,5 +313,100 @@ mod tests {
     #[test]
     fn test_feedback_response_roundtrip() {
         roundtrip(&FeedbackResponse { ok: true });
+    }
+
+    #[test]
+    fn plan_item_wire_roundtrip() {
+        let item = PlanItemWire {
+            kind: "shell".to_string(),
+            body: "echo hello".to_string(),
+            artifact_path: None,
+            clipboard: true,
+        };
+        roundtrip(&item);
+    }
+
+    #[test]
+    fn apply_response_single_plan_roundtrip() {
+        let resp = ApplyResponse {
+            plan_kind: "shell".into(),
+            artifact_path: None,
+            clipboard: true,
+            message: "copied to clipboard".into(),
+            plans: vec![PlanItemWire {
+                kind: "shell".to_string(),
+                body: "echo hello".to_string(),
+                artifact_path: None,
+                clipboard: true,
+            }],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: ApplyResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.plan_kind, "shell");
+        assert_eq!(back.plans.len(), 1);
+        assert_eq!(back.plans[0].kind, "shell");
+        assert_eq!(back.plans[0].body, "echo hello");
+    }
+
+    #[test]
+    fn apply_response_multi_plan_roundtrip() {
+        let resp = ApplyResponse {
+            plan_kind: "shell".into(),
+            artifact_path: None,
+            clipboard: true,
+            message: "shell command copied".into(),
+            plans: vec![
+                PlanItemWire {
+                    kind: "shell".to_string(),
+                    body: "brew install foo".to_string(),
+                    artifact_path: None,
+                    clipboard: true,
+                },
+                PlanItemWire {
+                    kind: "patch".to_string(),
+                    body: "diff --git a/file b/file\n-old\n+new".to_string(),
+                    artifact_path: Some("/tmp/organism-abc.patch".to_string()),
+                    clipboard: false,
+                },
+            ],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: ApplyResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.plans.len(), 2);
+        assert_eq!(back.plans[0].kind, "shell");
+        assert_eq!(back.plans[1].kind, "patch");
+    }
+
+    #[test]
+    fn apply_response_invariant_single_plan_matches_legacy_fields() {
+        // When plans non-empty, plans[0].kind == legacy plan_kind
+        let resp = ApplyResponse {
+            plan_kind: "shell".into(),
+            artifact_path: None,
+            clipboard: true,
+            message: "copied to clipboard".into(),
+            plans: vec![PlanItemWire {
+                kind: "shell".to_string(),
+                body: "echo hello".to_string(),
+                artifact_path: None,
+                clipboard: true,
+            }],
+        };
+        assert_eq!(resp.plan_kind, resp.plans[0].kind);
+    }
+
+    #[test]
+    fn apply_response_backward_compat_empty_plans_not_serialized() {
+        // Plans field with skip_serializing_if should not appear in JSON when empty
+        let resp = ApplyResponse {
+            plan_kind: "note".into(),
+            artifact_path: None,
+            clipboard: false,
+            message: "just text".into(),
+            plans: vec![],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        // Should not contain "plans" field when empty
+        assert!(!json.contains("\"plans\""));
     }
 }

@@ -15,14 +15,14 @@ use tracing::{debug, error, info, warn};
 
 use organism_protocol::{
     ApplyMode, ApplyRequest, ApplyResponse, Envelope, ErrorSummaryWire, ErrorsRequest,
-    ErrorsResponse, FeedbackRequest, FeedbackResponse, OrganismEvent, SuggestRequest,
+    ErrorsResponse, FeedbackRequest, FeedbackResponse, OrganismEvent, PlanItemWire, SuggestRequest,
     SuggestResponse,
 };
 
 use crate::clipboard;
 use crate::daemon::DaemonState;
 use crate::event_bus::EventBus;
-use organism_cortex::apply::{extract_plan, ApplyPlan};
+use organism_cortex::apply::{extract_plans, ApplyPlan};
 use organism_knowledge::{FeedbackRecord, KnowledgeStore, Verdict};
 use tokio::sync::RwLock;
 
@@ -281,8 +281,7 @@ async fn dispatch(
                 }
             };
 
-            let plan = extract_plan(&suggestion);
-            let resp = build_apply_response(&plan, req_data.mode, &req_data.error_key);
+            let resp = build_apply_response_multi(&suggestion, req_data.mode, &req_data.error_key);
 
             // Auto-record Accepted feedback when apply --stage succeeds
             if req_data.mode == ApplyMode::Stage {
@@ -436,6 +435,7 @@ async fn dispatch(
     }
 }
 
+#[allow(dead_code)]
 fn build_apply_response(plan: &ApplyPlan, mode: ApplyMode, error_key: &str) -> ApplyResponse {
     match plan {
         ApplyPlan::Note { text } => ApplyResponse {
@@ -443,6 +443,7 @@ fn build_apply_response(plan: &ApplyPlan, mode: ApplyMode, error_key: &str) -> A
             artifact_path: None,
             clipboard: false,
             message: text.clone(),
+            plans: vec![],
         },
         ApplyPlan::Patch { diff } => match mode {
             ApplyMode::Dry => ApplyResponse {
@@ -450,6 +451,7 @@ fn build_apply_response(plan: &ApplyPlan, mode: ApplyMode, error_key: &str) -> A
                 artifact_path: None,
                 clipboard: false,
                 message: format!("diff (dry-run):\n\n{}", diff),
+                plans: vec![],
             },
             ApplyMode::Stage => {
                 let path = std::env::temp_dir().join(format!("organism-{}.patch", error_key));
@@ -459,12 +461,14 @@ fn build_apply_response(plan: &ApplyPlan, mode: ApplyMode, error_key: &str) -> A
                         artifact_path: Some(path.to_string_lossy().into_owned()),
                         clipboard: false,
                         message: format!("patch written. apply with: git apply {}", path.display()),
+                        plans: vec![],
                     },
                     Err(e) => ApplyResponse {
                         plan_kind: "patch".into(),
                         artifact_path: None,
                         clipboard: false,
                         message: format!("failed to write patch: {}\n\n{}", e, diff),
+                        plans: vec![],
                     },
                 }
             }
@@ -475,6 +479,7 @@ fn build_apply_response(plan: &ApplyPlan, mode: ApplyMode, error_key: &str) -> A
                 artifact_path: None,
                 clipboard: false,
                 message: format!("would run:\n{}", command),
+                plans: vec![],
             },
             ApplyMode::Stage => {
                 let copied = clipboard::copy(command).unwrap_or(false);
@@ -488,9 +493,125 @@ fn build_apply_response(plan: &ApplyPlan, mode: ApplyMode, error_key: &str) -> A
                     artifact_path: None,
                     clipboard: copied,
                     message,
+                    plans: vec![],
                 }
             }
         },
+    }
+}
+
+/// Build an ApplyResponse for multi-block suggestions (M7 feature).
+/// Handles multiple plans: stages patches to individual files and shell commands to a script.
+fn build_apply_response_multi(suggestion: &str, mode: ApplyMode, error_key: &str) -> ApplyResponse {
+    let plans = extract_plans(suggestion);
+
+    // Build wire format plans and collect file operations
+    let mut wire_plans = Vec::new();
+    let mut patch_idx = 0;
+    let mut shell_commands = Vec::new();
+
+    for plan in plans.iter() {
+        match plan {
+            ApplyPlan::Patch { diff } => {
+                let artifact_path = if mode == ApplyMode::Stage {
+                    let path = std::env::temp_dir()
+                        .join(format!("organism-{}-{}.patch", error_key, patch_idx));
+                    let _ = std::fs::write(&path, diff);
+                    Some(path.to_string_lossy().into_owned())
+                } else {
+                    None
+                };
+                patch_idx += 1;
+
+                wire_plans.push(PlanItemWire {
+                    kind: "patch".to_string(),
+                    body: diff.clone(),
+                    artifact_path,
+                    clipboard: false,
+                });
+            }
+            ApplyPlan::Shell { command } => {
+                shell_commands.push(command.clone());
+                wire_plans.push(PlanItemWire {
+                    kind: "shell".to_string(),
+                    body: command.clone(),
+                    artifact_path: None,
+                    clipboard: false,
+                });
+            }
+            ApplyPlan::Note { text } => {
+                wire_plans.push(PlanItemWire {
+                    kind: "note".to_string(),
+                    body: text.clone(),
+                    artifact_path: None,
+                    clipboard: false,
+                });
+            }
+        }
+    }
+
+    // For Stage mode with shell commands: write to script or clipboard
+    let mut clipboard = false;
+    if mode == ApplyMode::Stage && !shell_commands.is_empty() {
+        let script = shell_commands.join("\n");
+        if wire_plans.len() > 1 {
+            // Multi-plan: write to script file
+            let script_path = std::env::temp_dir().join(format!("organism-{}.sh", error_key));
+            let _ = std::fs::write(&script_path, &script);
+            // Update the first shell plan's artifact_path
+            if !wire_plans.is_empty() {
+                if let Some(first_shell) = wire_plans.iter_mut().find(|p| p.kind == "shell") {
+                    first_shell.artifact_path = Some(script_path.to_string_lossy().into_owned());
+                }
+            }
+        } else {
+            // Single shell plan: try to copy to clipboard
+            clipboard = clipboard::copy(&script).unwrap_or(false);
+            if !wire_plans.is_empty() {
+                if let Some(shell_plan) = wire_plans.first_mut() {
+                    shell_plan.clipboard = clipboard;
+                }
+            }
+        }
+    }
+
+    // Build response maintaining backward compatibility
+    let (plan_kind, message, artifact_path) = if wire_plans.is_empty() {
+        ("note".into(), "(no plans)".into(), None)
+    } else if wire_plans.len() == 1 {
+        // Single plan: use old format with full content
+        let first = &wire_plans[0];
+        let msg = match &first.kind[..] {
+            "patch" => format!("diff (dry-run):\n\n{}", first.body),
+            "shell" => {
+                if mode == ApplyMode::Stage {
+                    format!("copied to clipboard:\n{}", first.body)
+                } else {
+                    format!("would run:\n{}", first.body)
+                }
+            }
+            "note" => first.body.clone(),
+            _ => first.body.clone(),
+        };
+        (first.kind.clone(), msg, first.artifact_path.clone())
+    } else {
+        // Multiple plans: use new format
+        let first = &wire_plans[0];
+        let msg = format!(
+            "[1/{}] {} + {} more plan(s)",
+            wire_plans.len(),
+            first.kind,
+            wire_plans.len() - 1
+        );
+        (first.kind.clone(), msg, first.artifact_path.clone())
+    };
+
+    ApplyResponse {
+        plan_kind,
+        artifact_path,
+        clipboard,
+        message,
+        plans: wire_plans,
     }
 }
 
