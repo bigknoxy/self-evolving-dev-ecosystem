@@ -23,6 +23,7 @@ async fn main() -> ExitCode {
         "status" => cmd_status().await,
         "suggest" => cmd_suggest().await,
         "apply" => cmd_apply(&args[2..]).await,
+        "feedback" => cmd_feedback(&args[2..]).await,
         "errors" => cmd_errors(&args[2..]).await,
         "log" => cmd_log().await,
         "sleep" => cmd_sleep().await,
@@ -54,6 +55,8 @@ fn cmd_help() {
     println!("  suggest   Request a suggestion for current directory");
     println!("  apply <ERROR_KEY> [--stage]");
     println!("            Materialize a cached suggestion (--stage writes patch / clipboards cmd)");
+    println!("  feedback <ERROR_KEY> accept|reject|ignore [--note \"...\"]");
+    println!("            Record user verdict on a suggestion");
     println!("  errors [--limit N] [--json]");
     println!("            List recent errors (default 20, --json for raw JSON output)");
     println!("  log       Show recent daemon activity");
@@ -280,6 +283,70 @@ async fn cmd_apply(args: &[String]) -> Result<()> {
     if let Some(p) = result.get("artifact_path").and_then(|v| v.as_str()) {
         println!("\nartifact: {}", p);
     }
+    Ok(())
+}
+
+/// Parse feedback command arguments: <error_key> <verdict> [--note "..."]
+fn parse_feedback_args(args: &[String]) -> Result<(String, String, Option<String>)> {
+    if args.len() < 2 {
+        anyhow::bail!("feedback: missing <ERROR_KEY> and <verdict>. Usage: feedback <ERROR_KEY> accept|reject|ignore [--note \"...\"]");
+    }
+
+    let error_key = args[0].clone();
+    if error_key.is_empty()
+        || error_key.len() > 64
+        || !error_key.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        anyhow::bail!("feedback: ERROR_KEY must be 1-64 hex chars");
+    }
+
+    let verdict = args[1].clone();
+    if !["accept", "reject", "ignore"].contains(&verdict.as_str()) {
+        anyhow::bail!("feedback: verdict must be 'accept', 'reject', or 'ignore'");
+    }
+
+    let mut note: Option<String> = None;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--note" => {
+                let n = args.get(i + 1).context("--note requires a value")?;
+                note = Some(n.clone());
+                i += 2;
+            }
+            other => anyhow::bail!("unknown flag in feedback: {}", other),
+        }
+    }
+
+    Ok((error_key, verdict, note))
+}
+
+async fn cmd_feedback(args: &[String]) -> Result<()> {
+    let (error_key, verdict, note) = parse_feedback_args(args)?;
+
+    let resp = send_request(
+        "feedback",
+        serde_json::json!({
+            "error_key": error_key,
+            "verdict": verdict,
+            "note": note
+        }),
+    )
+    .await?;
+
+    if let Some(err) = resp.payload.get("error").and_then(|v| v.as_str()) {
+        anyhow::bail!("daemon error: {}", err);
+    }
+
+    let result = resp.payload.get("result").unwrap_or(&resp.payload);
+    let ok = result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    if ok {
+        println!("Feedback recorded: {} verdict={}", error_key, verdict);
+    } else {
+        anyhow::bail!("feedback rejected by daemon");
+    }
+
     Ok(())
 }
 
