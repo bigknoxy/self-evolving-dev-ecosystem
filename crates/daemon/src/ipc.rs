@@ -422,8 +422,13 @@ async fn dispatch(
             if matches!(fb.verdict, Verdict::Accepted) {
                 // Lock held since line 370; suggestion text + hash already computed.
                 // best-effort snapshot; don't fail feedback if put fails.
-                if let Err(e) = store.put_accepted(&AcceptedSuggestion::from_feedback(&fb, suggestion)) {
-                    warn!("failed to snapshot accepted suggestion {}: {}", fb.suggestion_hash, e);
+                if let Err(e) =
+                    store.put_accepted(&AcceptedSuggestion::from_feedback(&fb, suggestion))
+                {
+                    warn!(
+                        "failed to snapshot accepted suggestion {}: {}",
+                        fb.suggestion_hash, e
+                    );
                 }
             }
 
@@ -733,13 +738,18 @@ mod tests {
     fn feedback_accepted_creates_accepted_snapshot() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut store = KnowledgeStore::open(tmp.path()).unwrap();
-        store.put_suggestion("err_abc123", "Add derive(Clone) to the struct").unwrap();
+        store
+            .put_suggestion("err_abc123", "Add derive(Clone) to the struct")
+            .unwrap();
 
         let fb = make_fb("err_abc123", "sugg_hash_xyz", Verdict::Accepted);
         store.put_feedback(&fb).unwrap();
         run_snapshot(&mut store, &fb);
 
-        let acc = store.get_accepted("sugg_hash_xyz").unwrap().expect("snapshot exists");
+        let acc = store
+            .get_accepted("sugg_hash_xyz")
+            .unwrap()
+            .expect("snapshot exists");
         assert_eq!(acc.text, "Add derive(Clone) to the struct");
         assert_eq!(acc.error_hash, "err_abc123");
     }
@@ -748,7 +758,9 @@ mod tests {
     fn feedback_rejected_no_accepted_snapshot() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut store = KnowledgeStore::open(tmp.path()).unwrap();
-        store.put_suggestion("err_def456", "Some suggestion").unwrap();
+        store
+            .put_suggestion("err_def456", "Some suggestion")
+            .unwrap();
 
         let fb = make_fb("err_def456", "sugg_hash_rejected", Verdict::Rejected);
         store.put_feedback(&fb).unwrap();

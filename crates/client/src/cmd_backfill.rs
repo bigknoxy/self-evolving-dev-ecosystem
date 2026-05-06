@@ -22,7 +22,10 @@ pub async fn cmd_backfill_accepts() -> Result<()> {
                 continue;
             }
             Err(e) => {
-                println!("warning: failed to check existing accepted suggestion for {}: {}", fb.suggestion_hash, e);
+                println!(
+                    "warning: failed to check existing accepted suggestion for {}: {}",
+                    fb.suggestion_hash, e
+                );
                 errored += 1;
                 continue;
             }
@@ -33,14 +36,20 @@ pub async fn cmd_backfill_accepts() -> Result<()> {
                 match store.put_accepted(&AcceptedSuggestion::from_feedback(&fb, text)) {
                     Ok(()) => snapped += 1,
                     Err(e) => {
-                        println!("warning: failed to snapshot accepted suggestion {}: {}", fb.suggestion_hash, e);
+                        println!(
+                            "warning: failed to snapshot accepted suggestion {}: {}",
+                            fb.suggestion_hash, e
+                        );
                         errored += 1;
                     }
                 }
             }
             Ok(None) => skipped_no_text += 1,
             Err(e) => {
-                println!("warning: failed to get suggestion text for {}: {}", fb.error_hash, e);
+                println!(
+                    "warning: failed to get suggestion text for {}: {}",
+                    fb.error_hash, e
+                );
                 errored += 1;
             }
         }
