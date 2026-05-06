@@ -10,6 +10,8 @@ use tracing_subscriber::EnvFilter;
 
 use organism_protocol::{Envelope, EventContext, OrganismEvent, TerminalEvent};
 
+mod cmd_backfill;
+
 #[tokio::main]
 async fn main() -> ExitCode {
     tracing_subscriber::fmt()
@@ -30,6 +32,7 @@ async fn main() -> ExitCode {
         "sleep" => cmd_sleep().await,
         "wake" => cmd_wake().await,
         "emit-terminal" => cmd_emit_terminal(&args[2..]).await,
+        "backfill-accepts" => cmd_backfill::cmd_backfill_accepts().await,
         _ => {
             cmd_help();
             Ok(())
@@ -66,6 +69,8 @@ fn cmd_help() {
     println!("  wake      Resume daemon activity");
     println!("  emit-terminal <cmd> [--exit-code N] [--cwd PATH] [--duration-ms M] [--stderr STR]");
     println!("            Inject a terminal event into the daemon (used by shell hook)");
+    println!("  backfill-accepts");
+    println!("            Snapshot existing accepted suggestions into immutable table (one-time)");
     println!("  help      Show this help");
 }
 
@@ -620,7 +625,7 @@ fn socket_path() -> PathBuf {
     data_dir().join("daemon.sock")
 }
 
-fn data_dir() -> PathBuf {
+pub(crate) fn data_dir() -> PathBuf {
     if let Ok(override_dir) = std::env::var("ORGANISM_HOME") {
         return PathBuf::from(override_dir);
     }
