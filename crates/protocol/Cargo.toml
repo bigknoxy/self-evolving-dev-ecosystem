@@ -10,3 +10,4 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+organism-knowledge = { path = "../knowledge" }

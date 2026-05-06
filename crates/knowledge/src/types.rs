@@ -1,9 +1,66 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Returns the default schema version for new records.
 pub fn default_schema_v() -> u32 {
     1
+}
+
+fn default_profile_schema_v() -> u32 {
+    1
+}
+
+// === Style Profile Types ===
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolStats {
+    pub accepts: u32,
+    pub rejects: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BlockStats {
+    pub accepts: u32,
+    pub rejects: u32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Terseness {
+    Concise,
+    Standard,
+    Verbose,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StyleProfile {
+    #[serde(default = "default_profile_schema_v")]
+    pub schema_v: u32,
+    pub generated_at: DateTime<Utc>,
+    pub feedback_count: u32,
+    pub accept_rate_overall: f32,
+    pub by_tool: HashMap<String, ToolStats>,
+    pub by_block_kind: HashMap<String, BlockStats>,
+    pub preferred_terseness: Terseness,
+    pub top_accepted_phrases: Vec<String>,
+    pub top_rejected_phrases: Vec<String>,
+}
+
+impl StyleProfile {
+    pub fn empty() -> Self {
+        Self {
+            schema_v: default_profile_schema_v(),
+            generated_at: Utc::now(),
+            feedback_count: 0,
+            accept_rate_overall: 0.0,
+            by_tool: HashMap::new(),
+            by_block_kind: HashMap::new(),
+            preferred_terseness: Terseness::Standard,
+            top_accepted_phrases: Vec::new(),
+            top_rejected_phrases: Vec::new(),
+        }
+    }
 }
 
 /// A fix record: known error → patch solution
@@ -126,6 +183,7 @@ pub mod keys {
     pub const SUGGESTION_PREFIX: &str = "suggestion:";
     pub const FEEDBACK_PREFIX: &str = "feedback:";
     pub const ACCEPTED_PREFIX: &str = "accepted:";
+    pub const STYLE_PROFILE_KEY: &str = "style_profile:current";
 }
 
 #[cfg(test)]
@@ -294,5 +352,63 @@ mod tests {
         }"#;
         let rec: AcceptedSuggestion = serde_json::from_str(old_json).unwrap();
         assert_eq!(rec.schema_v, 1);
+    }
+
+    #[test]
+    fn test_empty_style_profile_roundtrip() {
+        let p = StyleProfile::empty();
+        let json = serde_json::to_string(&p).unwrap();
+        let back: StyleProfile = serde_json::from_str(&json).unwrap();
+        assert_eq!(p, back);
+    }
+
+    #[test]
+    fn test_style_profile_with_data_roundtrip() {
+        let mut by_tool = HashMap::new();
+        by_tool.insert(
+            "rustc".to_string(),
+            ToolStats {
+                accepts: 5,
+                rejects: 2,
+            },
+        );
+        let mut by_block_kind = HashMap::new();
+        by_block_kind.insert(
+            "patch".to_string(),
+            BlockStats {
+                accepts: 3,
+                rejects: 0,
+            },
+        );
+        let p = StyleProfile {
+            schema_v: 1,
+            generated_at: Utc::now(),
+            feedback_count: 7,
+            accept_rate_overall: 0.71,
+            by_tool,
+            by_block_kind,
+            preferred_terseness: Terseness::Concise,
+            top_accepted_phrases: vec!["cargo build".into(), "use std".into()],
+            top_rejected_phrases: vec![],
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let back: StyleProfile = serde_json::from_str(&json).unwrap();
+        assert_eq!(p, back);
+    }
+
+    #[test]
+    fn test_style_profile_missing_schema_v_defaults() {
+        let json = r#"{
+            "generated_at": "2026-01-01T00:00:00Z",
+            "feedback_count": 0,
+            "accept_rate_overall": 0.0,
+            "by_tool": {},
+            "by_block_kind": {},
+            "preferred_terseness": "standard",
+            "top_accepted_phrases": [],
+            "top_rejected_phrases": []
+        }"#;
+        let p: StyleProfile = serde_json::from_str(json).unwrap();
+        assert_eq!(p.schema_v, 1);
     }
 }

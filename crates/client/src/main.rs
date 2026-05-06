@@ -27,6 +27,7 @@ async fn main() -> ExitCode {
         "apply" => cmd_apply(&args[2..]).await,
         "feedback" => cmd_feedback(&args[2..]).await,
         "errors" => cmd_errors(&args[2..]).await,
+        "profile" => cmd_profile(&args[2..]).await,
         "doctor" => cmd_doctor().await,
         "log" => cmd_log().await,
         "sleep" => cmd_sleep().await,
@@ -63,6 +64,10 @@ fn cmd_help() {
     println!("            Record user verdict on a suggestion");
     println!("  errors [--limit N] [--json]");
     println!("            List recent errors (default 20, --json for raw JSON output)");
+    println!("  profile [--rebuild] [--json]");
+    println!(
+        "            Show computed style profile (--rebuild forces recompute, --json for raw JSON)"
+    );
     println!("  doctor    Check knowledge store and daemon health");
     println!("  log       Show recent daemon activity");
     println!("  sleep     Pause all daemon activity");
@@ -470,6 +475,79 @@ async fn cmd_errors(args: &[String]) -> Result<()> {
         }
     } else {
         println!("{}", serde_json::to_string_pretty(result)?);
+    }
+
+    Ok(())
+}
+
+async fn cmd_profile(args: &[String]) -> Result<()> {
+    let mut rebuild = false;
+    let mut json_output = false;
+
+    for arg in args {
+        match arg.as_str() {
+            "--rebuild" => rebuild = true,
+            "--json" => json_output = true,
+            _ => {}
+        }
+    }
+
+    let params = serde_json::json!({"rebuild": rebuild});
+    let envelope = send_request("profile", params).await?;
+
+    let profile_response: organism_protocol::ProfileResponse =
+        serde_json::from_value(envelope.payload)?;
+    let profile = &profile_response.profile;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&profile_response)?);
+    } else {
+        // Human-readable format
+        println!(
+            "Profile Status: {}",
+            if profile_response.freshly_built {
+                "freshly built"
+            } else {
+                "cached"
+            }
+        );
+        println!();
+
+        println!("Feedback Count: {}", profile.feedback_count);
+        println!("Accept Rate: {:.1}%", profile.accept_rate_overall * 100.0);
+        println!("Preferred Terseness: {:?}", profile.preferred_terseness);
+        println!();
+
+        // Top 3 tools by activity (accepts + rejects)
+        println!("Top Tools by Activity:");
+        let mut tool_activity: Vec<_> = profile
+            .by_tool
+            .iter()
+            .map(|(name, stats)| {
+                let total = stats.accepts + stats.rejects;
+                (name.clone(), total, stats.accepts, stats.rejects)
+            })
+            .collect();
+        tool_activity.sort_by_key(|(_, total, _, _)| std::cmp::Reverse(*total));
+
+        for (name, total, accepts, rejects) in tool_activity.iter().take(3) {
+            let accept_rate = if *total > 0 {
+                (*accepts as f32 / *total as f32) * 100.0
+            } else {
+                0.0
+            };
+            println!(
+                "  {}: {} total ({} accepted, {} rejected, {:.0}%)",
+                name, total, accepts, rejects, accept_rate
+            );
+        }
+        println!();
+
+        // Top 5 accepted phrases
+        println!("Top Accepted Phrases:");
+        for (i, phrase) in profile.top_accepted_phrases.iter().take(5).enumerate() {
+            println!("  {}. {}", i + 1, phrase);
+        }
     }
 
     Ok(())

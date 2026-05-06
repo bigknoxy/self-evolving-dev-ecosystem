@@ -1,45 +1,6 @@
-use chrono::{DateTime, Utc};
-use organism_knowledge::{FeedbackRecord, Verdict};
-use serde::{Deserialize, Serialize};
+use chrono::Utc;
+use organism_knowledge::{BlockStats, FeedbackRecord, StyleProfile, Terseness, ToolStats, Verdict};
 use std::collections::HashMap;
-
-fn default_schema_v() -> u32 {
-    1
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ToolStats {
-    pub accepts: u32,
-    pub rejects: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BlockStats {
-    pub accepts: u32,
-    pub rejects: u32,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Terseness {
-    Concise,
-    Standard,
-    Verbose,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct StyleProfile {
-    #[serde(default = "default_schema_v")]
-    pub schema_v: u32,
-    pub generated_at: DateTime<Utc>,
-    pub feedback_count: u32,
-    pub accept_rate_overall: f32,
-    pub by_tool: HashMap<String, ToolStats>,
-    pub by_block_kind: HashMap<String, BlockStats>,
-    pub preferred_terseness: Terseness,
-    pub top_accepted_phrases: Vec<String>,
-    pub top_rejected_phrases: Vec<String>,
-}
 
 const STOPWORDS: &[&str] = &[
     "the", "a", "an", "and", "or", "but", "is", "are", "was", "were", "be", "been", "being", "to",
@@ -49,20 +10,41 @@ const STOPWORDS: &[&str] = &[
     "try", "expected", "found", "note", "help",
 ];
 
-impl StyleProfile {
-    pub fn empty() -> Self {
-        Self {
-            schema_v: default_schema_v(),
-            generated_at: Utc::now(),
-            feedback_count: 0,
-            accept_rate_overall: 0.0,
-            by_tool: HashMap::new(),
-            by_block_kind: HashMap::new(),
-            preferred_terseness: Terseness::Standard,
-            top_accepted_phrases: Vec::new(),
-            top_rejected_phrases: Vec::new(),
+/// Classify accepted suggestion text into block kind: "patch", "shell", or "note".
+/// Rules:
+/// - "patch": contains triple-backtick fence with diff/patch language, or starts with "--- "
+/// - "shell": contains fenced shell or bash block, or starts with "$ "
+/// - "note": everything else
+pub fn classify_block_kind(text: &str) -> &'static str {
+    // Check for triple-backtick blocks
+    if let Some(idx) = text.find("```") {
+        let after = &text[idx + 3..];
+        // Extract language identifier (first word after ```)
+        let lang_end = after
+            .find(|c: char| c.is_whitespace())
+            .unwrap_or(after.len());
+        let lang = after[..lang_end].to_lowercase();
+
+        if lang == "diff" || lang == "patch" {
+            return "patch";
+        }
+        if lang == "shell" || lang == "bash" || lang == "sh" {
+            return "shell";
         }
     }
+
+    // Check for markdown-style shell indicator (starts with $ )
+    if text.trim_start().starts_with("$ ") {
+        return "shell";
+    }
+
+    // Check for diff/patch indicator (starts with --- )
+    if text.trim_start().starts_with("--- ") {
+        return "patch";
+    }
+
+    // Default to note
+    "note"
 }
 
 /// Build a StyleProfile from raw feedback + accepted-suggestion text + per-error metadata.
@@ -356,5 +338,37 @@ mod tests {
         assert!(profile
             .top_accepted_phrases
             .contains(&"cargo build".to_string()));
+    }
+
+    #[test]
+    fn classify_block_kind_patch_fence() {
+        assert_eq!(classify_block_kind("```patch\n- old\n+ new\n```"), "patch");
+        assert_eq!(classify_block_kind("```diff\nsome diff here"), "patch");
+    }
+
+    #[test]
+    fn classify_block_kind_shell_fence() {
+        assert_eq!(classify_block_kind("```shell\necho hello"), "shell");
+        assert_eq!(classify_block_kind("```bash\nls -la"), "shell");
+        assert_eq!(classify_block_kind("```sh\ncd /tmp"), "shell");
+    }
+
+    #[test]
+    fn classify_block_kind_note_default() {
+        assert_eq!(classify_block_kind("just a note"), "note");
+        assert_eq!(classify_block_kind("```\ngeneric fence"), "note");
+        assert_eq!(classify_block_kind("some text here"), "note");
+    }
+
+    #[test]
+    fn classify_block_kind_dollar_prefix() {
+        assert_eq!(classify_block_kind("$ cargo build"), "shell");
+        assert_eq!(classify_block_kind("   $ cargo test"), "shell");
+    }
+
+    #[test]
+    fn classify_block_kind_diff_prefix() {
+        assert_eq!(classify_block_kind("--- a/file.rs"), "patch");
+        assert_eq!(classify_block_kind("   --- a/file.rs"), "patch");
     }
 }
