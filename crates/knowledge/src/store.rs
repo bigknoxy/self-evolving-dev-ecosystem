@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 
 use crate::migrate::migrate_error;
 use crate::types::{
-    keys, ErrorRecord, FeedbackRecord, FixRecord, PatternRecord, ProjectMeta, SuggestionRecord,
+    keys, AcceptedSuggestion, ErrorRecord, FeedbackRecord, FixRecord, PatternRecord, ProjectMeta,
+    SuggestionRecord,
 };
 
 /// Summary of an error for listing and display
@@ -284,6 +285,40 @@ impl KnowledgeStore {
         // Sort by timestamp descending (most recent first)
         records.sort_by_key(|r| std::cmp::Reverse(r.ts));
         Ok(records)
+    }
+
+    /// Store an accepted suggestion snapshot (immutable text).
+    /// Write-once: if the snapshot already exists, this is a no-op so the
+    /// first stored text is preserved (immutability enforced at storage layer).
+    pub fn put_accepted(&mut self, a: &AcceptedSuggestion) -> Result<()> {
+        let key = format!("{}{}", keys::ACCEPTED_PREFIX, a.suggestion_hash);
+        if self.key_to_path(&key).exists() {
+            return Ok(());
+        }
+        self.put(&key, a)
+    }
+
+    /// Retrieve an accepted suggestion snapshot by suggestion_hash.
+    pub fn get_accepted(&mut self, suggestion_hash: &str) -> Result<Option<AcceptedSuggestion>> {
+        self.get(&format!("{}{}", keys::ACCEPTED_PREFIX, suggestion_hash))
+    }
+
+    /// List all accepted suggestion hashes.
+    pub fn list_accepted(&self) -> Result<Vec<String>> {
+        // Read filenames directly so underscores in the hash survive round-trip
+        // (list_keys does a blanket '_' -> ':' replace that would corrupt them).
+        let safe_prefix = keys::ACCEPTED_PREFIX.replace([':', '/'], "_");
+        let mut hashes = Vec::new();
+        for entry in fs::read_dir(&self.data_dir)? {
+            let entry = entry?;
+            let fname = entry.file_name().to_string_lossy().into_owned();
+            if let Some(rest) = fname.strip_prefix(&safe_prefix) {
+                if let Some(hash) = rest.strip_suffix(".json") {
+                    hashes.push(hash.to_string());
+                }
+            }
+        }
+        Ok(hashes)
     }
 }
 
@@ -641,5 +676,103 @@ mod tests {
         let all = store.list_feedback().unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].error_hash, "error_valid");
+    }
+
+    #[test]
+    fn test_put_and_get_accepted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        let acc = AcceptedSuggestion {
+            suggestion_hash: "sugg_hash_abc".into(),
+            error_hash: "err_hash_xyz".into(),
+            text: "Try adding derive(Clone) to the struct.".into(),
+            ts: chrono::Utc::now(),
+            schema_v: 1,
+        };
+
+        store.put_accepted(&acc).unwrap();
+        let retrieved = store.get_accepted("sugg_hash_abc").unwrap();
+        assert_eq!(retrieved, Some(acc));
+    }
+
+    #[test]
+    fn test_get_accepted_missing_returns_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        let retrieved = store.get_accepted("nonexistent_hash").unwrap();
+        assert_eq!(retrieved, None);
+    }
+
+    #[test]
+    fn test_list_accepted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        let acc1 = AcceptedSuggestion {
+            suggestion_hash: "hash1".into(),
+            error_hash: "err1".into(),
+            text: "text1".into(),
+            ts: chrono::Utc::now(),
+            schema_v: 1,
+        };
+        let acc2 = AcceptedSuggestion {
+            suggestion_hash: "hash2".into(),
+            error_hash: "err2".into(),
+            text: "text2".into(),
+            ts: chrono::Utc::now(),
+            schema_v: 1,
+        };
+
+        store.put_accepted(&acc1).unwrap();
+        store.put_accepted(&acc2).unwrap();
+
+        let hashes = store.list_accepted().unwrap();
+        assert_eq!(hashes.len(), 2);
+        assert!(hashes.contains(&"hash1".to_string()));
+        assert!(hashes.contains(&"hash2".to_string()));
+    }
+
+    #[test]
+    fn test_put_accepted_is_write_once() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        let first = AcceptedSuggestion {
+            suggestion_hash: "h".into(),
+            error_hash: "e".into(),
+            text: "first".into(),
+            ts: chrono::Utc::now(),
+            schema_v: 1,
+        };
+        let second = AcceptedSuggestion {
+            text: "OVERWRITE_ATTEMPT".into(),
+            ..first.clone()
+        };
+
+        store.put_accepted(&first).unwrap();
+        store.put_accepted(&second).unwrap();
+
+        let got = store.get_accepted("h").unwrap().expect("snapshot present");
+        assert_eq!(got.text, "first", "second put must not overwrite");
+    }
+
+    #[test]
+    fn test_list_accepted_preserves_underscores_in_hash() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        let acc = AcceptedSuggestion {
+            suggestion_hash: "dead_beef".into(),
+            error_hash: "e".into(),
+            text: "t".into(),
+            ts: chrono::Utc::now(),
+            schema_v: 1,
+        };
+        store.put_accepted(&acc).unwrap();
+
+        let hashes = store.list_accepted().unwrap();
+        assert_eq!(hashes, vec!["dead_beef".to_string()]);
     }
 }

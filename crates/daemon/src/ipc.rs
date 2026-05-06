@@ -23,7 +23,7 @@ use crate::clipboard;
 use crate::daemon::DaemonState;
 use crate::event_bus::EventBus;
 use organism_cortex::apply::{extract_plans, ApplyPlan};
-use organism_knowledge::{FeedbackRecord, KnowledgeStore, Verdict};
+use organism_knowledge::{AcceptedSuggestion, FeedbackRecord, KnowledgeStore, Verdict};
 use tokio::sync::RwLock;
 
 fn is_safe_error_key(key: &str) -> bool {
@@ -419,6 +419,19 @@ async fn dispatch(
                 );
             }
 
+            if matches!(fb.verdict, Verdict::Accepted) {
+                // Lock held since line 370; suggestion text + hash already computed.
+                // best-effort snapshot; don't fail feedback if put fails.
+                if let Err(e) =
+                    store.put_accepted(&AcceptedSuggestion::from_feedback(&fb, suggestion))
+                {
+                    warn!(
+                        "failed to snapshot accepted suggestion {}: {}",
+                        fb.suggestion_hash, e
+                    );
+                }
+            }
+
             let resp = FeedbackResponse { ok: true };
             match serde_json::to_value(resp) {
                 Ok(v) => Envelope::ok_response(&req.id, v),
@@ -700,5 +713,59 @@ mod tests {
         assert_eq!(r.plan_kind, "shell");
         assert!(!r.clipboard);
         assert!(r.message.contains("echo hi"));
+    }
+
+    fn make_fb(error_hash: &str, suggestion_hash: &str, verdict: Verdict) -> FeedbackRecord {
+        FeedbackRecord {
+            error_hash: error_hash.to_string(),
+            suggestion_hash: suggestion_hash.to_string(),
+            verdict,
+            note: None,
+            ts: chrono::Utc::now(),
+            schema_v: 1,
+        }
+    }
+
+    fn run_snapshot(store: &mut KnowledgeStore, fb: &FeedbackRecord) {
+        if matches!(fb.verdict, Verdict::Accepted) {
+            if let Ok(Some(text)) = store.get_suggestion(&fb.error_hash) {
+                let _ = store.put_accepted(&AcceptedSuggestion::from_feedback(fb, text));
+            }
+        }
+    }
+
+    #[test]
+    fn feedback_accepted_creates_accepted_snapshot() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+        store
+            .put_suggestion("err_abc123", "Add derive(Clone) to the struct")
+            .unwrap();
+
+        let fb = make_fb("err_abc123", "sugg_hash_xyz", Verdict::Accepted);
+        store.put_feedback(&fb).unwrap();
+        run_snapshot(&mut store, &fb);
+
+        let acc = store
+            .get_accepted("sugg_hash_xyz")
+            .unwrap()
+            .expect("snapshot exists");
+        assert_eq!(acc.text, "Add derive(Clone) to the struct");
+        assert_eq!(acc.error_hash, "err_abc123");
+    }
+
+    #[test]
+    fn feedback_rejected_no_accepted_snapshot() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+        store
+            .put_suggestion("err_def456", "Some suggestion")
+            .unwrap();
+
+        let fb = make_fb("err_def456", "sugg_hash_rejected", Verdict::Rejected);
+        store.put_feedback(&fb).unwrap();
+        run_snapshot(&mut store, &fb);
+
+        assert!(store.get_accepted("sugg_hash_rejected").unwrap().is_none());
     }
 }

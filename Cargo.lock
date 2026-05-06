@@ -972,6 +972,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "organism-knowledge",
  "organism-protocol",
  "serde",
  "serde_json",

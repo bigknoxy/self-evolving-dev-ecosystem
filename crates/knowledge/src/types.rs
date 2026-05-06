@@ -93,6 +93,29 @@ pub struct FeedbackRecord {
     pub schema_v: u32,
 }
 
+/// An accepted suggestion snapshot — immutable copy of text at acceptance time
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AcceptedSuggestion {
+    pub suggestion_hash: String,
+    pub error_hash: String,
+    pub text: String,
+    pub ts: DateTime<Utc>,
+    #[serde(default = "default_schema_v")]
+    pub schema_v: u32,
+}
+
+impl AcceptedSuggestion {
+    pub fn from_feedback(fb: &FeedbackRecord, text: String) -> Self {
+        Self {
+            suggestion_hash: fb.suggestion_hash.clone(),
+            error_hash: fb.error_hash.clone(),
+            text,
+            ts: fb.ts,
+            schema_v: default_schema_v(),
+        }
+    }
+}
+
 /// Key prefixes for the key-value store
 pub mod keys {
     pub const FIX_PREFIX: &str = "fix:";
@@ -102,6 +125,7 @@ pub mod keys {
     pub const ERROR_PREFIX: &str = "error:";
     pub const SUGGESTION_PREFIX: &str = "suggestion:";
     pub const FEEDBACK_PREFIX: &str = "feedback:";
+    pub const ACCEPTED_PREFIX: &str = "accepted:";
 }
 
 #[cfg(test)]
@@ -244,5 +268,31 @@ mod tests {
         }"#;
         let rec: FeedbackRecord = serde_json::from_str(json).unwrap();
         assert_eq!(rec.schema_v, 7);
+    }
+
+    #[test]
+    fn test_accepted_suggestion_roundtrip() {
+        let acc = AcceptedSuggestion {
+            suggestion_hash: "sugg_hash_001".to_string(),
+            error_hash: "err_hash_001".to_string(),
+            text: "Try adding `derive(Clone)` to the struct definition.".to_string(),
+            ts: Utc::now(),
+            schema_v: 1,
+        };
+        let json = serde_json::to_string(&acc).unwrap();
+        let roundtrip: AcceptedSuggestion = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtrip, acc);
+    }
+
+    #[test]
+    fn test_accepted_suggestion_old_json_deserializes_to_1() {
+        let old_json = r#"{
+            "suggestion_hash": "sugg_hash_001",
+            "error_hash": "err_hash_001",
+            "text": "Try adding `derive(Clone)` to the struct definition.",
+            "ts": "2023-01-01T00:00:00Z"
+        }"#;
+        let rec: AcceptedSuggestion = serde_json::from_str(old_json).unwrap();
+        assert_eq!(rec.schema_v, 1);
     }
 }
