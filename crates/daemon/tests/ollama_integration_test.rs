@@ -73,7 +73,7 @@ async fn test_suggest_for_error_with_mock_ollama() -> Result<()> {
     };
 
     // Request suggestion
-    let suggestion = suggest_for_error(&client, &mut ctx.store, "test_hash_123").await?;
+    let suggestion = suggest_for_error(&client, &mut ctx.store, "test_hash_123", false).await?;
 
     // Verify response contains expected text
     assert!(suggestion.contains("cargo fix"));
@@ -114,7 +114,7 @@ async fn test_suggest_handles_ollama_error() -> Result<()> {
         http: reqwest::Client::new(),
     };
 
-    let result = suggest_for_error(&client, &mut ctx.store, "err_hash_999").await;
+    let result = suggest_for_error(&client, &mut ctx.store, "err_hash_999", false).await;
     assert!(result.is_err(), "Should error on 500 response");
     Ok(())
 }
@@ -138,7 +138,7 @@ async fn test_suggest_error_not_found() -> Result<()> {
         http: reqwest::Client::new(),
     };
 
-    let result = suggest_for_error(&client, &mut ctx.store, "nonexistent").await;
+    let result = suggest_for_error(&client, &mut ctx.store, "nonexistent", false).await;
     assert!(result.is_err(), "Should error when error record not found");
     assert!(result.unwrap_err().to_string().contains("not found"));
     Ok(())

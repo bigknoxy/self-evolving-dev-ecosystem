@@ -63,8 +63,8 @@ pub async fn handle_event<C: LlmClient>(
         Ok(None) => {}
     }
 
-    // Call Ollama to generate suggestion
-    match suggest_for_error(client, store, &event.hash).await {
+    // Call Ollama to generate suggestion (use_profile=true for M11 few-shot context)
+    match suggest_for_error(client, store, &event.hash, true).await {
         Ok(text) => {
             // Persist the suggestion
             if let Err(e) = store.put_suggestion(&event.hash, &text) {
