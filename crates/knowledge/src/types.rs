@@ -111,7 +111,7 @@ impl AcceptedSuggestion {
             error_hash: fb.error_hash.clone(),
             text,
             ts: fb.ts,
-            schema_v: 1,
+            schema_v: default_schema_v(),
         }
     }
 }

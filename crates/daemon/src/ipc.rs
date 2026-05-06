@@ -420,22 +420,10 @@ async fn dispatch(
             }
 
             if matches!(fb.verdict, Verdict::Accepted) {
-                if let Ok(Some(text)) = store.get_suggestion(&fb.error_hash) {
-                    // Verify hash match: compute current text hash and compare
-                    let mut hasher = sha2::Sha256::new();
-                    hasher.update(text.as_bytes());
-                    let digest = hasher.finalize();
-                    let current_hash = hex::encode(digest);
-
-                    if current_hash == fb.suggestion_hash {
-                        // best-effort snapshot; don't fail feedback if put fails
-                        if let Err(e) = store.put_accepted(&AcceptedSuggestion::from_feedback(&fb, text)) {
-                            warn!("failed to snapshot accepted suggestion {}: {}", fb.suggestion_hash, e);
-                        }
-                    } else {
-                        warn!("hash mismatch for suggestion {}: expected {}, got {}",
-                            fb.error_hash, fb.suggestion_hash, current_hash);
-                    }
+                // Lock held since line 370; suggestion text + hash already computed.
+                // best-effort snapshot; don't fail feedback if put fails.
+                if let Err(e) = store.put_accepted(&AcceptedSuggestion::from_feedback(&fb, suggestion)) {
+                    warn!("failed to snapshot accepted suggestion {}: {}", fb.suggestion_hash, e);
                 }
             }
 

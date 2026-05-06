@@ -288,12 +288,14 @@ impl KnowledgeStore {
     }
 
     /// Store an accepted suggestion snapshot (immutable text).
-    /// Keyed by suggestion_hash to ensure idempotency on re-put.
+    /// Write-once: if the snapshot already exists, this is a no-op so the
+    /// first stored text is preserved (immutability enforced at storage layer).
     pub fn put_accepted(&mut self, a: &AcceptedSuggestion) -> Result<()> {
-        self.put(
-            &format!("{}{}", keys::ACCEPTED_PREFIX, a.suggestion_hash),
-            a,
-        )
+        let key = format!("{}{}", keys::ACCEPTED_PREFIX, a.suggestion_hash);
+        if self.key_to_path(&key).exists() {
+            return Ok(());
+        }
+        self.put(&key, a)
     }
 
     /// Retrieve an accepted suggestion snapshot by suggestion_hash.
@@ -303,11 +305,20 @@ impl KnowledgeStore {
 
     /// List all accepted suggestion hashes.
     pub fn list_accepted(&self) -> Result<Vec<String>> {
-        let keys = self.list_keys(keys::ACCEPTED_PREFIX)?;
-        Ok(keys
-            .into_iter()
-            .map(|k| k.strip_prefix(keys::ACCEPTED_PREFIX).unwrap_or(&k).to_string())
-            .collect())
+        // Read filenames directly so underscores in the hash survive round-trip
+        // (list_keys does a blanket '_' -> ':' replace that would corrupt them).
+        let safe_prefix = keys::ACCEPTED_PREFIX.replace([':', '/'], "_");
+        let mut hashes = Vec::new();
+        for entry in fs::read_dir(&self.data_dir)? {
+            let entry = entry?;
+            let fname = entry.file_name().to_string_lossy().into_owned();
+            if let Some(rest) = fname.strip_prefix(&safe_prefix) {
+                if let Some(hash) = rest.strip_suffix(".json") {
+                    hashes.push(hash.to_string());
+                }
+            }
+        }
+        Ok(hashes)
     }
 }
 
@@ -721,5 +732,47 @@ mod tests {
         assert_eq!(hashes.len(), 2);
         assert!(hashes.contains(&"hash1".to_string()));
         assert!(hashes.contains(&"hash2".to_string()));
+    }
+
+    #[test]
+    fn test_put_accepted_is_write_once() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        let first = AcceptedSuggestion {
+            suggestion_hash: "h".into(),
+            error_hash: "e".into(),
+            text: "first".into(),
+            ts: chrono::Utc::now(),
+            schema_v: 1,
+        };
+        let second = AcceptedSuggestion {
+            text: "OVERWRITE_ATTEMPT".into(),
+            ..first.clone()
+        };
+
+        store.put_accepted(&first).unwrap();
+        store.put_accepted(&second).unwrap();
+
+        let got = store.get_accepted("h").unwrap().expect("snapshot present");
+        assert_eq!(got.text, "first", "second put must not overwrite");
+    }
+
+    #[test]
+    fn test_list_accepted_preserves_underscores_in_hash() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        let acc = AcceptedSuggestion {
+            suggestion_hash: "dead_beef".into(),
+            error_hash: "e".into(),
+            text: "t".into(),
+            ts: chrono::Utc::now(),
+            schema_v: 1,
+        };
+        store.put_accepted(&acc).unwrap();
+
+        let hashes = store.list_accepted().unwrap();
+        assert_eq!(hashes, vec!["dead_beef".to_string()]);
     }
 }
