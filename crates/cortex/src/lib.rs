@@ -3,6 +3,7 @@ pub mod context_detector;
 pub mod error_classifier;
 pub mod pattern_engine;
 pub mod redact;
+pub mod style;
 pub mod suggest;
 
 pub use context_detector::*;
