@@ -89,6 +89,7 @@ async fn test_m8_redaction_chain_with_mock_llm() -> Result<()> {
         last_seen: Utc::now(),
         occurrences: 1,
         last_command: "cargo build /Users/alice/project".to_string(),
+        schema_v: 1,
     };
 
     ctx.store.put_error(&error)?;

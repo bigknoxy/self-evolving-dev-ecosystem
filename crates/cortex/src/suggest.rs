@@ -70,6 +70,7 @@ mod tests {
             last_seen: Utc::now(),
             occurrences: 3,
             last_command: "cargo build".to_string(),
+            schema_v: 1,
         };
 
         store.put_error(&error).unwrap();
@@ -112,6 +113,7 @@ mod tests {
             last_seen: Utc::now(),
             occurrences: 1,
             last_command: "cargo test".to_string(),
+            schema_v: 1,
         };
 
         store.put_error(&error).unwrap();
@@ -143,6 +145,7 @@ mod tests {
             last_seen: Utc::now(),
             occurrences: 2,
             last_command: "cargo build /Users/alice/project".to_string(),
+            schema_v: 1,
         };
 
         store.put_error(&error).unwrap();

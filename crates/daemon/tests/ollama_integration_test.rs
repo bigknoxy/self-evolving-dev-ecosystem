@@ -60,6 +60,7 @@ async fn test_suggest_for_error_with_mock_ollama() -> Result<()> {
         last_seen: Utc::now(),
         occurrences: 2,
         last_command: "cargo build".to_string(),
+        schema_v: 1,
     };
 
     ctx.store.put_error(&error)?;
@@ -102,6 +103,7 @@ async fn test_suggest_handles_ollama_error() -> Result<()> {
         last_seen: Utc::now(),
         occurrences: 1,
         last_command: "cargo build".to_string(),
+        schema_v: 1,
     };
 
     ctx.store.put_error(&error)?;

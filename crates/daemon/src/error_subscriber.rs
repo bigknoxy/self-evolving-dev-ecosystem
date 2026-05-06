@@ -92,6 +92,7 @@ pub async fn run(
                             last_seen: now,
                             occurrences: 1,
                             last_command: term.command_line.clone(),
+                            schema_v: 1,
                         };
                         if let Err(e) = store.put_error(&rec) {
                             warn!(error = %e, "failed to insert ErrorRecord");

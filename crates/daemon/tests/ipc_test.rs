@@ -153,6 +153,7 @@ async fn ipc_feedback_flow() {
             last_seen: chrono::Utc::now(),
             occurrences: 1,
             last_command: "cargo build".to_string(),
+            schema_v: 1,
         };
         store.put_error(&err).expect("put error");
         store
@@ -258,6 +259,7 @@ async fn ipc_apply_stage_auto_records_feedback() {
             last_seen: chrono::Utc::now(),
             occurrences: 1,
             last_command: "cargo build".to_string(),
+            schema_v: 1,
         };
         store.put_error(&err).expect("put error");
         store

@@ -39,6 +39,7 @@ async fn test_handle_event_cached_suggestion() {
         last_seen: Utc::now(),
         occurrences: 1,
         last_command: "cargo build".to_string(),
+        schema_v: 1,
     };
     store.put_error(&error).expect("error stored");
     store
@@ -79,6 +80,7 @@ async fn test_handle_event_generates_suggestion() {
         last_seen: Utc::now(),
         occurrences: 1,
         last_command: "cargo build".to_string(),
+        schema_v: 1,
     };
     store.put_error(&error).expect("error stored");
 
@@ -120,6 +122,7 @@ async fn test_handle_event_llm_error() {
         last_seen: Utc::now(),
         occurrences: 1,
         last_command: "cargo build".to_string(),
+        schema_v: 1,
     };
     store.put_error(&error).expect("error stored");
 

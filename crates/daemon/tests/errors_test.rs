@@ -74,6 +74,7 @@ async fn errors_returns_sorted_list() {
             last_seen: now - chrono::Duration::hours(2),
             occurrences: 3,
             last_command: "cargo build".into(),
+            schema_v: 1,
         };
 
         // Error 2: more recent
@@ -86,6 +87,7 @@ async fn errors_returns_sorted_list() {
             last_seen: now - chrono::Duration::minutes(30),
             occurrences: 1,
             last_command: "cargo test".into(),
+            schema_v: 1,
         };
 
         store.put_error(&err1).unwrap();

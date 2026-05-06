@@ -1,6 +1,11 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Returns the default schema version for new records.
+pub fn default_schema_v() -> u32 {
+    1
+}
+
 /// A fix record: known error → patch solution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FixRecord {
@@ -28,6 +33,8 @@ pub struct PatternRecord {
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
     pub examples: Vec<String>,
+    #[serde(default = "default_schema_v")]
+    pub schema_v: u32,
 }
 
 /// A project metadata record
@@ -55,6 +62,8 @@ pub struct ErrorRecord {
     pub last_seen: DateTime<Utc>,
     pub occurrences: u64,
     pub last_command: String,
+    #[serde(default = "default_schema_v")]
+    pub schema_v: u32,
 }
 
 /// An LLM-generated suggestion for an error, cached on disk.
@@ -80,6 +89,8 @@ pub struct FeedbackRecord {
     pub verdict: Verdict,
     pub note: Option<String>,
     pub ts: DateTime<Utc>,
+    #[serde(default = "default_schema_v")]
+    pub schema_v: u32,
 }
 
 /// Key prefixes for the key-value store
@@ -91,4 +102,147 @@ pub mod keys {
     pub const ERROR_PREFIX: &str = "error:";
     pub const SUGGESTION_PREFIX: &str = "suggestion:";
     pub const FEEDBACK_PREFIX: &str = "feedback:";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_fresh_error_write_has_schema_v_1() {
+        let rec = ErrorRecord {
+            tool: "rustc".to_string(),
+            kind: "E0599".to_string(),
+            hash: "abc123".to_string(),
+            raw_excerpt: "error[E0599]".to_string(),
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+            occurrences: 1,
+            last_command: "cargo build".to_string(),
+            schema_v: 1,
+        };
+        assert_eq!(rec.schema_v, 1);
+    }
+
+    #[test]
+    fn test_fresh_pattern_write_has_schema_v_1() {
+        let rec = PatternRecord {
+            id: "pat1".to_string(),
+            trigger: "test".to_string(),
+            action: "act".to_string(),
+            frequency: 5,
+            confidence: 0.8,
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+            examples: vec![],
+            schema_v: 1,
+        };
+        assert_eq!(rec.schema_v, 1);
+    }
+
+    #[test]
+    fn test_fresh_feedback_write_has_schema_v_1() {
+        let rec = FeedbackRecord {
+            error_hash: "hash1".to_string(),
+            suggestion_hash: "sugg1".to_string(),
+            verdict: Verdict::Accepted,
+            note: None,
+            ts: Utc::now(),
+            schema_v: 1,
+        };
+        assert_eq!(rec.schema_v, 1);
+    }
+
+    #[test]
+    fn test_old_error_json_without_field_deserializes_to_1() {
+        let old_json = r#"{
+            "tool": "rustc",
+            "kind": "E0599",
+            "hash": "abc123",
+            "raw_excerpt": "error[E0599]",
+            "first_seen": "2023-01-01T00:00:00Z",
+            "last_seen": "2023-01-01T00:00:00Z",
+            "occurrences": 1,
+            "last_command": "cargo build"
+        }"#;
+        let rec: ErrorRecord = serde_json::from_str(old_json).unwrap();
+        assert_eq!(rec.schema_v, 1);
+    }
+
+    #[test]
+    fn test_old_pattern_json_without_field_deserializes_to_1() {
+        let old_json = r#"{
+            "id": "pat1",
+            "trigger": "test",
+            "action": "act",
+            "frequency": 5,
+            "confidence": 0.8,
+            "first_seen": "2023-01-01T00:00:00Z",
+            "last_seen": "2023-01-01T00:00:00Z",
+            "examples": []
+        }"#;
+        let rec: PatternRecord = serde_json::from_str(old_json).unwrap();
+        assert_eq!(rec.schema_v, 1);
+    }
+
+    #[test]
+    fn test_old_feedback_json_without_field_deserializes_to_1() {
+        let old_json = r#"{
+            "error_hash": "hash1",
+            "suggestion_hash": "sugg1",
+            "verdict": "Accepted",
+            "note": null,
+            "ts": "2023-01-01T00:00:00Z"
+        }"#;
+        let rec: FeedbackRecord = serde_json::from_str(old_json).unwrap();
+        assert_eq!(rec.schema_v, 1);
+    }
+
+    #[test]
+    fn test_error_explicit_schema_v_preserved() {
+        let json = r#"{
+            "tool": "rustc",
+            "kind": "E0599",
+            "hash": "abc123",
+            "raw_excerpt": "error[E0599]",
+            "first_seen": "2023-01-01T00:00:00Z",
+            "last_seen": "2023-01-01T00:00:00Z",
+            "occurrences": 1,
+            "last_command": "cargo build",
+            "schema_v": 99
+        }"#;
+        let rec: ErrorRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(rec.schema_v, 99);
+    }
+
+    #[test]
+    fn test_pattern_explicit_schema_v_preserved() {
+        let json = r#"{
+            "id": "pat1",
+            "trigger": "test",
+            "action": "act",
+            "frequency": 5,
+            "confidence": 0.8,
+            "first_seen": "2023-01-01T00:00:00Z",
+            "last_seen": "2023-01-01T00:00:00Z",
+            "examples": [],
+            "schema_v": 42
+        }"#;
+        let rec: PatternRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(rec.schema_v, 42);
+    }
+
+    #[test]
+    fn test_feedback_explicit_schema_v_preserved() {
+        let json = r#"{
+            "error_hash": "hash1",
+            "suggestion_hash": "sugg1",
+            "verdict": "Accepted",
+            "note": null,
+            "ts": "2023-01-01T00:00:00Z",
+            "schema_v": 7
+        }"#;
+        let rec: FeedbackRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(rec.schema_v, 7);
+    }
 }

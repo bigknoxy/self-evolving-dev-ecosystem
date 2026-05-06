@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::migrate::migrate_error;
 use crate::types::{
     keys, ErrorRecord, FeedbackRecord, FixRecord, PatternRecord, ProjectMeta, SuggestionRecord,
 };
@@ -137,7 +138,19 @@ impl KnowledgeStore {
     }
 
     pub fn get_error(&mut self, hash: &str) -> Result<Option<ErrorRecord>> {
-        self.get(&format!("{}{}", keys::ERROR_PREFIX, hash))
+        let key = format!("{}{}", keys::ERROR_PREFIX, hash);
+        if let Some(cached) = self.cache.get(&key) {
+            let raw = serde_json::from_str::<serde_json::Value>(cached)?;
+            return Ok(Some(migrate_error(raw)?));
+        }
+        let path = self.key_to_path(&key);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = fs::read_to_string(&path).with_context(|| format!("Reading {:?}", path))?;
+        self.cache.insert(key.clone(), content.clone());
+        let raw = serde_json::from_str::<serde_json::Value>(&content)?;
+        Ok(Some(migrate_error(raw)?))
     }
 
     pub fn put_error(&mut self, record: &ErrorRecord) -> Result<()> {
@@ -148,8 +161,10 @@ impl KnowledgeStore {
         let keys = self.list_keys(keys::ERROR_PREFIX)?;
         let mut out = Vec::with_capacity(keys.len());
         for key in keys {
-            if let Some(rec) = self.get::<ErrorRecord>(&key)? {
-                out.push(rec);
+            if let Some(hash) = key.strip_prefix(keys::ERROR_PREFIX) {
+                if let Some(rec) = self.get_error(hash)? {
+                    out.push(rec);
+                }
             }
         }
         Ok(out)
@@ -170,7 +185,10 @@ impl KnowledgeStore {
                 // Try to parse the error record; skip corrupt files
                 match fs::read_to_string(&path) {
                     Ok(content) => {
-                        match serde_json::from_str::<ErrorRecord>(&content) {
+                        let parsed = serde_json::from_str::<serde_json::Value>(&content)
+                            .ok()
+                            .and_then(|v| crate::migrate::migrate_error(v).ok());
+                        match parsed.ok_or(()) {
                             Ok(record) => {
                                 // Check if suggestion exists
                                 let suggestion_key =
@@ -310,6 +328,7 @@ mod tests {
             last_seen: chrono::Utc::now(),
             occurrences: 1,
             last_command: "cargo build".into(),
+            schema_v: 1,
         };
         store.put_error(&err).unwrap();
         store.put_suggestion(hash, "do the thing").unwrap();
@@ -369,6 +388,7 @@ mod tests {
             last_seen: now - chrono::Duration::hours(3),
             occurrences: 1,
             last_command: "cargo build".into(),
+            schema_v: 1,
         };
         let err2 = ErrorRecord {
             tool: "rustc".into(),
@@ -379,6 +399,7 @@ mod tests {
             last_seen: now - chrono::Duration::hours(1),
             occurrences: 2,
             last_command: "cargo test".into(),
+            schema_v: 1,
         };
         let err3 = ErrorRecord {
             tool: "rustc".into(),
@@ -389,6 +410,7 @@ mod tests {
             last_seen: now - chrono::Duration::minutes(30),
             occurrences: 3,
             last_command: "cargo run".into(),
+            schema_v: 1,
         };
 
         store.put_error(&err1).unwrap();
@@ -419,6 +441,7 @@ mod tests {
                 last_seen: now - chrono::Duration::seconds(i as i64),
                 occurrences: 1,
                 last_command: "cargo build".into(),
+                schema_v: 1,
             };
             store.put_error(&err).unwrap();
         }
@@ -442,6 +465,7 @@ mod tests {
             last_seen: now,
             occurrences: 1,
             last_command: "cargo build".into(),
+            schema_v: 1,
         };
         store.put_error(&err).unwrap();
 
@@ -474,6 +498,7 @@ mod tests {
             last_seen: now,
             occurrences: 1,
             last_command: "cargo build".into(),
+            schema_v: 1,
         };
         store.put_error(&good_err).unwrap();
 
@@ -533,6 +558,7 @@ mod tests {
             verdict: Verdict::Accepted,
             note: Some("looks good".into()),
             ts: now,
+            schema_v: 1,
         };
 
         store.put_feedback(&fb).unwrap();
@@ -558,6 +584,7 @@ mod tests {
             verdict: Verdict::Rejected,
             note: None,
             ts: now - chrono::Duration::seconds(10),
+            schema_v: 1,
         };
 
         // Second feedback for same error
@@ -567,6 +594,7 @@ mod tests {
             verdict: Verdict::Accepted,
             note: Some("better".into()),
             ts: now,
+            schema_v: 1,
         };
 
         store.put_feedback(&fb1).unwrap();
@@ -601,6 +629,7 @@ mod tests {
             verdict: Verdict::Ignored,
             note: None,
             ts: now,
+            schema_v: 1,
         };
         store.put_feedback(&fb).unwrap();
 
