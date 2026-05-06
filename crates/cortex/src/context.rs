@@ -263,7 +263,7 @@ mod tests {
             "Clone trait".to_string(),
         ];
 
-        let output = build_few_shot_context(&profile, "rustc", &vec![]);
+        let output = build_few_shot_context(&profile, "rustc", &[]);
 
         assert!(output.contains("Terseness: Verbose"));
         assert!(output.contains("Tool acceptance: rustc → 67%"));

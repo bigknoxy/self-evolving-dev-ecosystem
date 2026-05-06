@@ -4,7 +4,8 @@
 //! One request per connection; daemon writes one response Envelope and closes.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use sha2::Digest;
@@ -25,6 +26,85 @@ use crate::event_bus::EventBus;
 use organism_cortex::apply::{extract_plans, ApplyPlan};
 use organism_knowledge::{AcceptedSuggestion, FeedbackRecord, KnowledgeStore, Verdict};
 use tokio::sync::RwLock;
+
+/// Module-level state for profile refresh rate-limiting.
+struct RefreshState {
+    feedback_count_since_refresh: u32,
+    last_refresh_at: Option<Instant>,
+}
+
+impl RefreshState {
+    fn new() -> Self {
+        RefreshState {
+            feedback_count_since_refresh: 0,
+            last_refresh_at: None,
+        }
+    }
+}
+
+/// Get the profile refresh counter threshold from env (default 10).
+fn get_profile_refresh_every() -> u32 {
+    std::env::var("ORGANISM_PROFILE_REFRESH_EVERY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10)
+}
+
+/// Get the profile refresh minimum interval in milliseconds from env (default 60000ms = 60s).
+fn get_profile_refresh_min_interval_ms() -> u64 {
+    std::env::var("ORGANISM_PROFILE_REFRESH_MIN_INTERVAL_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60_000)
+}
+
+/// Get the global RefreshState.
+fn refresh_state() -> &'static tokio::sync::Mutex<RefreshState> {
+    // Use a simple static for test-resettability
+    static REFRESH_STATE: OnceLock<tokio::sync::Mutex<RefreshState>> = OnceLock::new();
+    REFRESH_STATE.get_or_init(|| {
+        // Initialize with defaults; can be reset via reset_refresh_state()
+        tokio::sync::Mutex::new(RefreshState::new())
+    })
+}
+
+/// Check if profile refresh is needed and update state accordingly.
+/// Returns true if refresh should happen, false otherwise.
+async fn should_refresh_profile() -> bool {
+    let mut state = refresh_state().lock().await;
+    let threshold = get_profile_refresh_every();
+    let min_interval_ms = get_profile_refresh_min_interval_ms();
+
+    // Increment counter
+    state.feedback_count_since_refresh += 1;
+
+    // Check if we've reached the threshold
+    if state.feedback_count_since_refresh < threshold {
+        return false;
+    }
+
+    // Check rate-limit window
+    if let Some(last_refresh) = state.last_refresh_at {
+        let elapsed_ms = last_refresh.elapsed().as_millis() as u64;
+        if elapsed_ms < min_interval_ms {
+            // Still within rate-limit window; don't refresh yet
+            return false;
+        }
+    }
+
+    // Trigger refresh: update timestamp and reset counter
+    state.last_refresh_at = Some(Instant::now());
+    state.feedback_count_since_refresh = 0;
+    true
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub async fn reset_refresh_state() {
+    let mut state = refresh_state().lock().await;
+    state.feedback_count_since_refresh = 0;
+    state.last_refresh_at = None;
+}
 
 fn is_safe_error_key(key: &str) -> bool {
     !key.is_empty() && key.len() <= 64 && key.chars().all(|c| c.is_ascii_hexdigit())
@@ -473,6 +553,25 @@ async fn dispatch(
                         "failed to snapshot accepted suggestion {}: {}",
                         fb.suggestion_hash, e
                     );
+                }
+            }
+
+            // Check if we should rebuild the profile after this feedback.
+            // Drop the store lock before potentially triggering a rebuild.
+            drop(store);
+
+            if should_refresh_profile().await {
+                // Rebuild the profile
+                let mut store_mut = knowledge.write().await;
+                match build_profile_from_store(&mut store_mut) {
+                    Ok(p) => {
+                        if let Err(e) = store_mut.put_style_profile(&p) {
+                            eprintln!("failed to persist refreshed profile: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("failed to rebuild profile after feedback: {}", e);
+                    }
                 }
             }
 
