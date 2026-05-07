@@ -11,6 +11,7 @@ use tracing_subscriber::EnvFilter;
 use organism_protocol::{Envelope, EventContext, OrganismEvent, TerminalEvent};
 
 mod cmd_backfill;
+mod cmd_stats;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -21,7 +22,7 @@ async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     let cmd = args.get(1).map(|s| s.as_str()).unwrap_or("help");
 
-    let result = match cmd {
+    let result: Result<()> = match cmd {
         "status" => cmd_status().await,
         "suggest" => cmd_suggest().await,
         "apply" => cmd_apply(&args[2..]).await,
@@ -34,6 +35,7 @@ async fn main() -> ExitCode {
         "wake" => cmd_wake().await,
         "emit-terminal" => cmd_emit_terminal(&args[2..]).await,
         "backfill-accepts" => cmd_backfill::cmd_backfill_accepts().await,
+        "stats" => cmd_stats(&args[2..]),
         _ => {
             cmd_help();
             Ok(())
@@ -76,6 +78,8 @@ fn cmd_help() {
     println!("            Inject a terminal event into the daemon (used by shell hook)");
     println!("  backfill-accepts");
     println!("            Snapshot existing accepted suggestions into immutable table (one-time)");
+    println!("  stats [--json] [--capture-baseline] [--baseline] [--since <DURATION>]");
+    println!("            Show metrics; capture baseline or compare with baseline");
     println!("  help      Show this help");
 }
 
@@ -671,6 +675,46 @@ async fn cmd_wake() -> Result<()> {
     let _ = resp;
     println!("Organism resumed");
     Ok(())
+}
+
+fn cmd_stats(args: &[String]) -> Result<()> {
+    let mut json = false;
+    let mut capture_baseline = false;
+    let mut baseline = false;
+    let mut since: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--capture-baseline" => {
+                capture_baseline = true;
+                i += 1;
+            }
+            "--baseline" => {
+                baseline = true;
+                i += 1;
+            }
+            "--since" => {
+                let v = args.get(i + 1).context("--since requires a value")?;
+                since = Some(v.clone());
+                i += 2;
+            }
+            other => anyhow::bail!("unknown flag in stats: {}", other),
+        }
+    }
+
+    let stats_args = cmd_stats::StatsArgs {
+        json,
+        capture_baseline,
+        baseline,
+        since,
+    };
+
+    cmd_stats::cmd_stats(&stats_args)
 }
 
 async fn send_request(method: &str, params: serde_json::Value) -> Result<Envelope> {
