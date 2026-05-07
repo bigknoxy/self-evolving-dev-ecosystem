@@ -39,9 +39,11 @@ mod tests {
 
     #[test]
     fn test_metrics_roundtrip() {
-        let mut metrics = Metrics::default();
-        metrics.suggestions_total = 42;
-        metrics.feedback_accept = 10;
+        let mut metrics = Metrics {
+            suggestions_total: 42,
+            feedback_accept: 10,
+            ..Metrics::default()
+        };
         metrics.by_tool.insert(
             "rustfmt".to_string(),
             ToolMetrics {

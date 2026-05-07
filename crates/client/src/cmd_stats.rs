@@ -298,13 +298,14 @@ mod tests {
 
     #[test]
     fn test_delta_basic() {
-        let mut current = Metrics::default();
-        current.feedback_accept = 5;
-        current.feedback_reject = 0;
-
-        let mut baseline = Metrics::default();
-        baseline.feedback_accept = 2;
-        baseline.feedback_reject = 0;
+        let current = Metrics {
+            feedback_accept: 5,
+            ..Metrics::default()
+        };
+        let baseline = Metrics {
+            feedback_accept: 2,
+            ..Metrics::default()
+        };
 
         let delta = compute_delta(&current, &baseline);
         assert_eq!(delta.feedback_accept, 3);
@@ -313,11 +314,14 @@ mod tests {
 
     #[test]
     fn test_delta_saturating() {
-        let mut current = Metrics::default();
-        current.feedback_accept = 2;
-
-        let mut baseline = Metrics::default();
-        baseline.feedback_accept = 5;
+        let current = Metrics {
+            feedback_accept: 2,
+            ..Metrics::default()
+        };
+        let baseline = Metrics {
+            feedback_accept: 5,
+            ..Metrics::default()
+        };
 
         let delta = compute_delta(&current, &baseline);
         // saturating_sub should return 0, not panic
