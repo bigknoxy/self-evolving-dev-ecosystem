@@ -17,6 +17,7 @@ use organism_ollama::{LlmClient, OllamaClient};
 use organism_protocol::{ErrorClassifiedEvent, OrganismEvent};
 
 use crate::event_bus::EventBus;
+use crate::metrics::SharedMetrics;
 
 /// Outcome of processing an error event for suggestion generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +39,7 @@ pub async fn handle_event<C: LlmClient>(
     store: &mut KnowledgeStore,
     client: &C,
     seen: &mut HashSet<String>,
+    metrics: Option<&SharedMetrics>,
 ) -> Result<SubscriberOutcome> {
     // Deduplicate: skip if we've already processed this error in this session
     if seen.contains(&event.hash) {
@@ -52,6 +54,10 @@ pub async fn handle_event<C: LlmClient>(
     match store.get_suggestion(&event.hash) {
         Ok(Some(_)) => {
             debug!(hash = %event.hash, "ollama_subscriber: suggestion cached for hash");
+            // Bump cached counter
+            if let Some(m) = metrics {
+                m.write().await.suggestions_cached += 1;
+            }
             return Ok(SubscriberOutcome::SkippedCached);
         }
         Err(err) => {
@@ -63,13 +69,17 @@ pub async fn handle_event<C: LlmClient>(
         Ok(None) => {}
     }
 
-    // Call Ollama to generate suggestion
-    match suggest_for_error(client, store, &event.hash).await {
+    // Call Ollama to generate suggestion (use_profile=true for M11 few-shot context)
+    match suggest_for_error(client, store, &event.hash, true).await {
         Ok(text) => {
             // Persist the suggestion
             if let Err(e) = store.put_suggestion(&event.hash, &text) {
                 warn!(error = %e, hash = %event.hash, "ollama_subscriber: failed to persist suggestion");
                 return Ok(SubscriberOutcome::Skipped(format!("persist failed: {}", e)));
+            }
+            // Bump total counter
+            if let Some(m) = metrics {
+                m.write().await.suggestions_total += 1;
             }
             info!(hash = %event.hash, "ollama_subscriber: suggestion generated and cached");
             Ok(SubscriberOutcome::Generated)
@@ -87,6 +97,7 @@ pub async fn handle_event<C: LlmClient>(
 pub async fn run(
     bus: Arc<EventBus>,
     knowledge: Arc<RwLock<KnowledgeStore>>,
+    metrics: SharedMetrics,
     mut shutdown: broadcast::Receiver<()>,
 ) -> Result<()> {
     // Check if Ollama integration is enabled
@@ -133,7 +144,7 @@ pub async fn run(
                     continue;
                 }
                 let mut store = knowledge.write().await;
-                let _ = handle_event(e, &mut store, &client, &mut seen).await;
+                let _ = handle_event(e, &mut store, &client, &mut seen, Some(&metrics)).await;
             }
             Ok(_) => {
                 debug!("ollama_subscriber: ignoring non-error-classified event");
@@ -215,7 +226,7 @@ mod tests {
         };
         let mut seen = HashSet::new();
 
-        let outcome = handle_event(event, &mut store, &mock, &mut seen)
+        let outcome = handle_event(event, &mut store, &mock, &mut seen, None)
             .await
             .expect("outcome");
         assert_eq!(outcome, SubscriberOutcome::SkippedCached);
@@ -253,7 +264,7 @@ mod tests {
         };
         let mut seen = HashSet::new();
 
-        let outcome = handle_event(event, &mut store, &mock, &mut seen)
+        let outcome = handle_event(event, &mut store, &mock, &mut seen, None)
             .await
             .expect("outcome");
         assert_eq!(outcome, SubscriberOutcome::Generated);
@@ -292,7 +303,7 @@ mod tests {
 
         let mut seen = HashSet::new();
 
-        let outcome = handle_event(event, &mut store, &FailingLlmClient, &mut seen)
+        let outcome = handle_event(event, &mut store, &FailingLlmClient, &mut seen, None)
             .await
             .expect("outcome");
         match outcome {
@@ -301,5 +312,91 @@ mod tests {
             }
             _ => panic!("Expected Skipped outcome, got {:?}", outcome),
         }
+    }
+
+    #[tokio::test]
+    async fn test_handle_event_bumps_counters_on_cache_hit() {
+        use crate::metrics;
+
+        let tmp = TempDir::new().expect("tempdir created");
+        let mut store = KnowledgeStore::open(tmp.path()).expect("store opened");
+
+        // Pre-populate suggestion in cache
+        store
+            .put_suggestion("test_hash4", "Cached suggestion")
+            .expect("suggestion stored");
+
+        let event = ErrorClassifiedEvent {
+            ts: Utc::now(),
+            hash: "test_hash4".to_string(),
+            tool: "cargo".to_string(),
+            error_kind: "E0599".to_string(),
+            command: "cargo build".to_string(),
+            is_first_in_window: true,
+        };
+
+        let mock = MockLlmClient {
+            response: "Should not be called".to_string(),
+        };
+        let mut seen = HashSet::new();
+
+        // Create shared metrics
+        let metrics = metrics::new_shared();
+
+        let outcome = handle_event(event, &mut store, &mock, &mut seen, Some(&metrics))
+            .await
+            .expect("outcome");
+        assert_eq!(outcome, SubscriberOutcome::SkippedCached);
+
+        // Verify counter was bumped
+        let m = metrics.read().await;
+        assert_eq!(m.suggestions_cached, 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_event_bumps_counters_on_generation() {
+        use crate::metrics;
+
+        let tmp = TempDir::new().expect("tempdir created");
+        let mut store = KnowledgeStore::open(tmp.path()).expect("store opened");
+
+        let error = ErrorRecord {
+            tool: "cargo".to_string(),
+            kind: "E0599".to_string(),
+            hash: "test_hash5".to_string(),
+            raw_excerpt: "no method".to_string(),
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+            occurrences: 1,
+            last_command: "cargo build".to_string(),
+            schema_v: 1,
+        };
+        store.put_error(&error).expect("error stored");
+
+        let event = ErrorClassifiedEvent {
+            ts: Utc::now(),
+            hash: "test_hash5".to_string(),
+            tool: "cargo".to_string(),
+            error_kind: "E0599".to_string(),
+            command: "cargo build".to_string(),
+            is_first_in_window: true,
+        };
+
+        let mock = MockLlmClient {
+            response: "Generated suggestion".to_string(),
+        };
+        let mut seen = HashSet::new();
+
+        // Create shared metrics
+        let metrics = metrics::new_shared();
+
+        let outcome = handle_event(event, &mut store, &mock, &mut seen, Some(&metrics))
+            .await
+            .expect("outcome");
+        assert_eq!(outcome, SubscriberOutcome::Generated);
+
+        // Verify counter was bumped
+        let m = metrics.read().await;
+        assert_eq!(m.suggestions_total, 1);
     }
 }

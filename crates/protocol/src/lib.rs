@@ -1,12 +1,14 @@
 pub mod events;
 pub mod messages;
+pub mod metrics;
 
 pub use events::*;
 pub use messages::{
     ApplyMode, ApplyRequest, ApplyResponse, Envelope, ErrorSummaryWire, ErrorsRequest,
-    ErrorsResponse, FeedbackRequest, FeedbackResponse, MessageType, PlanItemWire, StatusResponse,
-    SuggestRequest, SuggestResponse,
+    ErrorsResponse, FeedbackRequest, FeedbackResponse, MessageType, PlanItemWire, ProfileRequest,
+    ProfileResponse, StatusResponse, SuggestRequest, SuggestResponse,
 };
+pub use metrics::{Metrics, ToolMetrics};
 
 #[cfg(test)]
 mod tests {

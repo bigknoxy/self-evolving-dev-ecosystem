@@ -8,6 +8,7 @@ mod daemon;
 mod error_subscriber;
 mod event_bus;
 mod ipc;
+mod metrics;
 mod ollama_subscriber;
 mod sensors;
 
@@ -74,6 +75,10 @@ async fn main() -> anyhow::Result<()> {
 
     let daemon = Daemon::new(data_dir.clone())?;
 
+    // Load metrics from snapshot; wrap in Arc<RwLock>
+    let loaded_metrics = metrics::load_or_default(&data_dir);
+    let shared_metrics = std::sync::Arc::new(tokio::sync::RwLock::new(loaded_metrics));
+
     {
         let state = daemon.state.read().await;
         info!(
@@ -83,16 +88,43 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // Spawn hourly snapshot task
+    let snapshot_metrics = shared_metrics.clone();
+    let snapshot_dir = data_dir.clone();
+    tokio::spawn(async move {
+        // Honor env override for testability (default 3600 seconds)
+        let interval_secs = std::env::var("ORGANISM_METRICS_SNAPSHOT_INTERVAL_SECS")
+            .unwrap_or_else(|_| "3600".to_string())
+            .parse::<u64>()
+            .unwrap_or(3600);
+
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+        loop {
+            interval.tick().await;
+            if let Err(e) = metrics::snapshot(&snapshot_metrics, &snapshot_dir).await {
+                tracing::warn!(error = %e, "failed to snapshot metrics");
+            }
+        }
+    });
+
     // Spawn IPC server with shutdown channel
     let socket_path = ipc::socket_path_for(&data_dir);
     let ipc_state = daemon.state.clone();
     let ipc_bus = daemon.bus.clone();
     let ipc_knowledge = daemon.knowledge.clone();
+    let ipc_metrics = shared_metrics.clone();
     let ipc_socket = socket_path.clone();
     let ipc_shutdown = shutdown_tx.subscribe();
     tokio::spawn(async move {
-        if let Err(e) =
-            ipc::serve(ipc_state, ipc_bus, ipc_knowledge, ipc_socket, ipc_shutdown).await
+        if let Err(e) = ipc::serve(
+            ipc_state,
+            ipc_bus,
+            ipc_knowledge,
+            ipc_metrics,
+            ipc_socket,
+            ipc_shutdown,
+        )
+        .await
         {
             tracing::error!(error = %e, "ipc server stopped");
         }
@@ -125,9 +157,16 @@ async fn main() -> anyhow::Result<()> {
     // Spawn Ollama subscriber: generates LLM suggestions for errors (if enabled).
     let ollama_bus = daemon.bus.clone();
     let ollama_knowledge = daemon.knowledge.clone();
+    let ollama_metrics = shared_metrics.clone();
     let ollama_shutdown = shutdown_tx.subscribe();
     tokio::spawn(async move {
-        if let Err(e) = ollama_subscriber::run(ollama_bus, ollama_knowledge, ollama_shutdown).await
+        if let Err(e) = ollama_subscriber::run(
+            ollama_bus,
+            ollama_knowledge,
+            ollama_metrics,
+            ollama_shutdown,
+        )
+        .await
         {
             tracing::error!(error = %e, "ollama_subscriber stopped with error");
         }
@@ -135,6 +174,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Run event loop (keeps daemon alive); exits on ctrl_c.
     daemon.run_event_loop().await;
+
+    // Snapshot metrics on shutdown (best-effort)
+    if let Err(e) = metrics::snapshot(&shared_metrics, &data_dir).await {
+        tracing::warn!(error = %e, "failed to snapshot metrics on shutdown");
+    }
 
     // Best-effort cleanup of socket file on shutdown.
     let _ = std::fs::remove_file(&socket_path);

@@ -60,7 +60,7 @@ async fn test_handle_event_cached_suggestion() {
     };
     let mut seen = HashSet::new();
 
-    let outcome = handle_event(event, &mut store, &mock, &mut seen)
+    let outcome = handle_event(event, &mut store, &mock, &mut seen, None)
         .await
         .expect("outcome");
     assert_eq!(outcome, SubscriberOutcome::SkippedCached);
@@ -98,7 +98,7 @@ async fn test_handle_event_generates_suggestion() {
     };
     let mut seen = HashSet::new();
 
-    let outcome = handle_event(event, &mut store, &mock, &mut seen)
+    let outcome = handle_event(event, &mut store, &mock, &mut seen, None)
         .await
         .expect("outcome");
     assert_eq!(outcome, SubscriberOutcome::Generated);
@@ -137,7 +137,7 @@ async fn test_handle_event_llm_error() {
 
     let mut seen = HashSet::new();
 
-    let outcome = handle_event(event, &mut store, &FailingLlmClient, &mut seen)
+    let outcome = handle_event(event, &mut store, &FailingLlmClient, &mut seen, None)
         .await
         .expect("outcome");
     match outcome {

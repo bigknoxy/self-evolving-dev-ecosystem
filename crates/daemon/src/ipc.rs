@@ -4,7 +4,8 @@
 //! One request per connection; daemon writes one response Envelope and closes.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use sha2::Digest;
@@ -22,12 +23,136 @@ use organism_protocol::{
 use crate::clipboard;
 use crate::daemon::DaemonState;
 use crate::event_bus::EventBus;
+use crate::metrics::SharedMetrics;
 use organism_cortex::apply::{extract_plans, ApplyPlan};
 use organism_knowledge::{AcceptedSuggestion, FeedbackRecord, KnowledgeStore, Verdict};
 use tokio::sync::RwLock;
 
+/// Module-level state for profile refresh rate-limiting.
+struct RefreshState {
+    feedback_count_since_refresh: u32,
+    last_refresh_at: Option<Instant>,
+}
+
+impl RefreshState {
+    fn new() -> Self {
+        RefreshState {
+            feedback_count_since_refresh: 0,
+            last_refresh_at: None,
+        }
+    }
+}
+
+/// Get the profile refresh counter threshold from env (default 10).
+fn get_profile_refresh_every() -> u32 {
+    std::env::var("ORGANISM_PROFILE_REFRESH_EVERY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10)
+}
+
+/// Get the profile refresh minimum interval in milliseconds from env (default 60000ms = 60s).
+fn get_profile_refresh_min_interval_ms() -> u64 {
+    std::env::var("ORGANISM_PROFILE_REFRESH_MIN_INTERVAL_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60_000)
+}
+
+/// Get the global RefreshState.
+fn refresh_state() -> &'static tokio::sync::Mutex<RefreshState> {
+    // Use a simple static for test-resettability
+    static REFRESH_STATE: OnceLock<tokio::sync::Mutex<RefreshState>> = OnceLock::new();
+    REFRESH_STATE.get_or_init(|| {
+        // Initialize with defaults; can be reset via reset_refresh_state()
+        tokio::sync::Mutex::new(RefreshState::new())
+    })
+}
+
+/// Check if profile refresh is needed and update state accordingly.
+/// Returns true if refresh should happen, false otherwise.
+async fn should_refresh_profile() -> bool {
+    let mut state = refresh_state().lock().await;
+    let threshold = get_profile_refresh_every();
+    let min_interval_ms = get_profile_refresh_min_interval_ms();
+
+    // Increment counter
+    state.feedback_count_since_refresh += 1;
+
+    // Check if we've reached the threshold
+    if state.feedback_count_since_refresh < threshold {
+        return false;
+    }
+
+    // Check rate-limit window
+    if let Some(last_refresh) = state.last_refresh_at {
+        let elapsed_ms = last_refresh.elapsed().as_millis() as u64;
+        if elapsed_ms < min_interval_ms {
+            // Still within rate-limit window; don't refresh yet
+            return false;
+        }
+    }
+
+    // Trigger refresh: update timestamp and reset counter
+    state.last_refresh_at = Some(Instant::now());
+    state.feedback_count_since_refresh = 0;
+    true
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub async fn reset_refresh_state() {
+    let mut state = refresh_state().lock().await;
+    state.feedback_count_since_refresh = 0;
+    state.last_refresh_at = None;
+}
+
 fn is_safe_error_key(key: &str) -> bool {
     !key.is_empty() && key.len() <= 64 && key.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Build a StyleProfile from the current knowledge store state.
+/// Reads feedback, errors, and accepted suggestions to construct the profile.
+fn build_profile_from_store(
+    store: &mut organism_knowledge::KnowledgeStore,
+) -> anyhow::Result<organism_knowledge::StyleProfile> {
+    use std::collections::HashMap;
+
+    // Load all feedback
+    let feedback = store.list_feedback()?;
+
+    // Build tool_for_hash: map error_hash -> tool
+    let mut tool_for_hash: HashMap<String, String> = HashMap::new();
+    let errors = store.list_errors()?;
+    for err in errors {
+        tool_for_hash.insert(err.hash.clone(), err.tool.clone());
+    }
+
+    // Build accepted_text: map suggestion_hash -> text
+    let mut accepted_text: HashMap<String, String> = HashMap::new();
+    let accepted_hashes = store.list_accepted()?;
+    for hash in accepted_hashes {
+        if let Some(acc) = store.get_accepted(&hash)? {
+            accepted_text.insert(hash, acc.text);
+        }
+    }
+
+    // Build block_kind_for_suggestion: map suggestion_hash -> "patch"|"shell"|"note"
+    let mut block_kind_for_suggestion: HashMap<String, String> = HashMap::new();
+    for (hash, text) in &accepted_text {
+        let kind = organism_cortex::classify_block_kind(text);
+        block_kind_for_suggestion.insert(hash.clone(), kind.to_string());
+    }
+
+    // Invoke cortex to build the profile
+    let profile = organism_cortex::build_profile(
+        &feedback,
+        &accepted_text,
+        &tool_for_hash,
+        &block_kind_for_suggestion,
+    );
+
+    Ok(profile)
 }
 
 /// Bind a Unix socket at `socket_path` and serve incoming RPC requests.
@@ -37,6 +162,7 @@ pub async fn serve(
     state: Arc<RwLock<DaemonState>>,
     bus: Arc<EventBus>,
     knowledge: Arc<RwLock<KnowledgeStore>>,
+    metrics: SharedMetrics,
     socket_path: PathBuf,
     mut shutdown: broadcast::Receiver<()>,
 ) -> Result<()> {
@@ -67,9 +193,10 @@ pub async fn serve(
                         let state_clone = state.clone();
                         let bus_clone = bus.clone();
                         let knowledge_clone = knowledge.clone();
+                        let metrics_clone = metrics.clone();
                         tokio::spawn(async move {
                             if let Err(e) =
-                                handle_connection(state_clone, bus_clone, knowledge_clone, stream).await
+                                handle_connection(state_clone, bus_clone, knowledge_clone, metrics_clone, stream).await
                             {
                                 warn!(error = %e, "ipc connection error");
                             }
@@ -91,6 +218,7 @@ async fn handle_connection(
     state: Arc<RwLock<DaemonState>>,
     bus: Arc<EventBus>,
     knowledge: Arc<RwLock<KnowledgeStore>>,
+    metrics: SharedMetrics,
     stream: UnixStream,
 ) -> Result<()> {
     let (read_half, mut write_half) = stream.into_split();
@@ -105,7 +233,7 @@ async fn handle_connection(
     debug!(line = %line.trim(), "ipc request");
 
     let response = match serde_json::from_str::<Envelope>(line.trim()) {
-        Ok(env) => dispatch(state, bus, knowledge, env).await,
+        Ok(env) => dispatch(state, bus, knowledge, metrics, env).await,
         Err(e) => Envelope::error_response("0", &format!("invalid envelope: {}", e)),
     };
 
@@ -120,6 +248,7 @@ async fn dispatch(
     state: Arc<RwLock<DaemonState>>,
     bus: Arc<EventBus>,
     knowledge: Arc<RwLock<KnowledgeStore>>,
+    metrics: SharedMetrics,
     req: Envelope,
 ) -> Envelope {
     // Extract method from request payload (Envelope::request format).
@@ -196,6 +325,14 @@ async fn dispatch(
                 Ok(Some(t)) => (t, true),
                 _ => (String::new(), false),
             };
+
+            // Bump suggestions metrics
+            let mut m = metrics.write().await;
+            m.suggestions_total += 1;
+            if cached {
+                m.suggestions_cached += 1;
+            }
+            drop(m);
 
             Envelope::ok_response(
                 &req.id,
@@ -384,6 +521,14 @@ async fn dispatch(
                 }
             };
 
+            // Try to get the tool from the error record
+            let tool = store
+                .get_error(&req_data.error_key)
+                .ok()
+                .flatten()
+                .map(|e| e.tool)
+                .unwrap_or_else(|| "unknown".to_string());
+
             // Hash suggestion text
             let mut hasher = sha2::Sha256::new();
             hasher.update(suggestion.as_bytes());
@@ -419,6 +564,23 @@ async fn dispatch(
                 );
             }
 
+            // Update metrics based on verdict (single write-lock for atomicity)
+            match fb.verdict {
+                Verdict::Accepted => {
+                    let mut m = metrics.write().await;
+                    m.feedback_accept += 1;
+                    m.by_tool.entry(tool.clone()).or_default().accepts += 1;
+                }
+                Verdict::Rejected => {
+                    let mut m = metrics.write().await;
+                    m.feedback_reject += 1;
+                    m.by_tool.entry(tool.clone()).or_default().rejects += 1;
+                }
+                Verdict::Ignored => {
+                    // No counter for ignored verdicts
+                }
+            }
+
             if matches!(fb.verdict, Verdict::Accepted) {
                 // Lock held since line 370; suggestion text + hash already computed.
                 // best-effort snapshot; don't fail feedback if put fails.
@@ -432,7 +594,82 @@ async fn dispatch(
                 }
             }
 
+            // Check if we should rebuild the profile after this feedback.
+            // Drop the store lock before potentially triggering a rebuild.
+            drop(store);
+
+            if should_refresh_profile().await {
+                // Rebuild the profile
+                let mut store_mut = knowledge.write().await;
+                match build_profile_from_store(&mut store_mut) {
+                    Ok(p) => {
+                        if let Err(e) = store_mut.put_style_profile(&p) {
+                            eprintln!("failed to persist refreshed profile: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("failed to rebuild profile after feedback: {}", e);
+                    }
+                }
+            }
+
             let resp = FeedbackResponse { ok: true };
+            match serde_json::to_value(resp) {
+                Ok(v) => Envelope::ok_response(&req.id, v),
+                Err(e) => {
+                    Envelope::error_response(&req.id, &format!("response serialize failed: {}", e))
+                }
+            }
+        }
+        "profile" => {
+            let params = req
+                .payload
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let req_data: organism_protocol::ProfileRequest =
+                serde_json::from_value(params).unwrap_or_default();
+
+            let mut store = knowledge.write().await;
+
+            // Decide whether to rebuild
+            let should_rebuild =
+                req_data.rebuild || !matches!(store.get_style_profile(), Ok(Some(_)));
+
+            let profile = if should_rebuild {
+                match build_profile_from_store(&mut store) {
+                    Ok(p) => {
+                        // Persist the newly built profile
+                        let _ = store.put_style_profile(&p);
+                        p
+                    }
+                    Err(e) => {
+                        return Envelope::error_response(
+                            &req.id,
+                            &format!("failed to build profile: {}", e),
+                        );
+                    }
+                }
+            } else {
+                match store.get_style_profile() {
+                    Ok(Some(p)) => p,
+                    Ok(None) => {
+                        // Should not happen due to check above, but fallback to empty
+                        organism_knowledge::StyleProfile::empty()
+                    }
+                    Err(e) => {
+                        return Envelope::error_response(
+                            &req.id,
+                            &format!("failed to retrieve cached profile: {}", e),
+                        );
+                    }
+                }
+            };
+
+            let resp = organism_protocol::ProfileResponse {
+                profile,
+                freshly_built: should_rebuild,
+            };
             match serde_json::to_value(resp) {
                 Ok(v) => Envelope::ok_response(&req.id, v),
                 Err(e) => {
@@ -767,5 +1004,107 @@ mod tests {
         run_snapshot(&mut store, &fb);
 
         assert!(store.get_accepted("sugg_hash_rejected").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_feedback_accepted_bumps_metrics() {
+        use crate::daemon::DaemonState;
+        use crate::event_bus::EventBus;
+        use crate::metrics;
+        use chrono::Utc;
+        use organism_knowledge::ErrorRecord;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        // Create error with tool field (use hex for error hash)
+        let error_hash = "abcd1234".to_string();
+        let error = ErrorRecord {
+            tool: "rustfmt".to_string(),
+            kind: "E0599".to_string(),
+            hash: error_hash.clone(),
+            raw_excerpt: "error".to_string(),
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+            occurrences: 1,
+            last_command: "cargo fmt".to_string(),
+            schema_v: 1,
+        };
+        store.put_error(&error).unwrap();
+        store
+            .put_suggestion(&error_hash, "Add derive(Clone)")
+            .unwrap();
+
+        // Wrap store in shared state
+        let knowledge = Arc::new(RwLock::new(store));
+        let state = Arc::new(RwLock::new(DaemonState::new()));
+        let bus = Arc::new(EventBus::new(1024));
+        let metrics = metrics::new_shared();
+
+        // Build feedback request envelope with params matching FeedbackRequest
+        let feedback_req = organism_protocol::FeedbackRequest {
+            error_key: error_hash.clone(),
+            verdict: "accept".to_string(),
+            note: None,
+        };
+        let req = Envelope::request("feedback", serde_json::to_value(feedback_req).unwrap());
+
+        // Dispatch the request
+        let _ = dispatch(state, bus, knowledge, metrics.clone(), req).await;
+
+        // Verify metrics were bumped
+        let m = metrics.read().await;
+        assert_eq!(m.feedback_accept, 1);
+        assert_eq!(m.by_tool["rustfmt"].accepts, 1);
+    }
+
+    #[tokio::test]
+    async fn test_feedback_rejected_bumps_metrics() {
+        use crate::daemon::DaemonState;
+        use crate::event_bus::EventBus;
+        use crate::metrics;
+        use chrono::Utc;
+        use organism_knowledge::ErrorRecord;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        // Create error with tool field (use hex for error hash)
+        let error_hash = "def5678a".to_string();
+        let error = ErrorRecord {
+            tool: "cargo".to_string(),
+            kind: "E0599".to_string(),
+            hash: error_hash.clone(),
+            raw_excerpt: "error".to_string(),
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+            occurrences: 1,
+            last_command: "cargo build".to_string(),
+            schema_v: 1,
+        };
+        store.put_error(&error).unwrap();
+        store.put_suggestion(&error_hash, "Add impl block").unwrap();
+
+        // Wrap store in shared state
+        let knowledge = Arc::new(RwLock::new(store));
+        let state = Arc::new(RwLock::new(DaemonState::new()));
+        let bus = Arc::new(EventBus::new(1024));
+        let metrics = metrics::new_shared();
+
+        // Build feedback request envelope with params matching FeedbackRequest
+        let feedback_req = organism_protocol::FeedbackRequest {
+            error_key: error_hash.clone(),
+            verdict: "reject".to_string(),
+            note: None,
+        };
+        let req = Envelope::request("feedback", serde_json::to_value(feedback_req).unwrap());
+
+        // Dispatch the request
+        let _ = dispatch(state, bus, knowledge, metrics.clone(), req).await;
+
+        // Verify metrics were bumped
+        let m = metrics.read().await;
+        assert_eq!(m.feedback_reject, 1);
+        assert_eq!(m.by_tool["cargo"].rejects, 1);
     }
 }

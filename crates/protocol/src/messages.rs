@@ -170,6 +170,20 @@ pub struct FeedbackResponse {
     pub ok: bool,
 }
 
+/// Profile request: get or rebuild the developer style profile
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProfileRequest {
+    #[serde(default)]
+    pub rebuild: bool,
+}
+
+/// Profile response: the computed developer style profile
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileResponse {
+    pub profile: organism_knowledge::StyleProfile,
+    pub freshly_built: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,5 +422,47 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         // Should not contain "plans" field when empty
         assert!(!json.contains("\"plans\""));
+    }
+
+    #[test]
+    fn profile_request_default_rebuild_false() {
+        let req = ProfileRequest::default();
+        assert!(!req.rebuild);
+    }
+
+    #[test]
+    fn profile_request_rebuild_true_roundtrip() {
+        let req = ProfileRequest { rebuild: true };
+        let json = serde_json::to_string(&req).unwrap();
+        let back: ProfileRequest = serde_json::from_str(&json).unwrap();
+        assert!(back.rebuild);
+    }
+
+    #[test]
+    fn profile_response_roundtrip() {
+        use organism_knowledge::{StyleProfile, Terseness};
+        use std::collections::HashMap;
+
+        let profile = StyleProfile {
+            schema_v: 1,
+            generated_at: chrono::Utc::now(),
+            feedback_count: 5,
+            accept_rate_overall: 0.8,
+            by_tool: HashMap::new(),
+            by_block_kind: HashMap::new(),
+            preferred_terseness: Terseness::Standard,
+            top_accepted_phrases: vec!["cargo build".into()],
+            top_rejected_phrases: vec![],
+        };
+
+        let resp = ProfileResponse {
+            profile: profile.clone(),
+            freshly_built: true,
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: ProfileResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.profile.feedback_count, 5);
+        assert!(back.freshly_built);
     }
 }

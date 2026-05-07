@@ -32,6 +32,10 @@ mod daemon;
 #[path = "../src/ipc.rs"]
 mod ipc;
 
+#[allow(dead_code)]
+#[path = "../src/metrics.rs"]
+mod metrics;
+
 use daemon::DaemonState;
 use event_bus::EventBus;
 
@@ -70,10 +74,12 @@ async fn apply_dry_returns_patch_message() {
 
     let state = Arc::new(RwLock::new(DaemonState::new()));
     let bus = Arc::new(EventBus::new(64));
+    let metrics = Arc::new(RwLock::new(metrics::Metrics::default()));
     let knowledge = Arc::new(RwLock::new(KnowledgeStore::open(tmp.path()).unwrap()));
 
     let serve_state = state.clone();
     let serve_bus = bus.clone();
+    let serve_metrics = metrics.clone();
     let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
@@ -82,6 +88,7 @@ async fn apply_dry_returns_patch_message() {
             serve_state,
             serve_bus,
             serve_knowledge,
+            serve_metrics,
             serve_socket,
             shutdown_rx,
         )
@@ -124,10 +131,12 @@ async fn apply_unknown_key_errors() {
 
     let state = Arc::new(RwLock::new(DaemonState::new()));
     let bus = Arc::new(EventBus::new(64));
+    let metrics = Arc::new(RwLock::new(metrics::Metrics::default()));
     let knowledge = Arc::new(RwLock::new(KnowledgeStore::open(tmp.path()).unwrap()));
 
     let serve_state = state.clone();
     let serve_bus = bus.clone();
+    let serve_metrics = metrics.clone();
     let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
@@ -136,6 +145,7 @@ async fn apply_unknown_key_errors() {
             serve_state,
             serve_bus,
             serve_knowledge,
+            serve_metrics,
             serve_socket,
             shutdown_rx,
         )
@@ -169,10 +179,12 @@ async fn apply_rejects_path_traversal_key() {
 
     let state = Arc::new(RwLock::new(DaemonState::new()));
     let bus = Arc::new(EventBus::new(64));
+    let metrics = Arc::new(RwLock::new(metrics::Metrics::default()));
     let knowledge = Arc::new(RwLock::new(KnowledgeStore::open(tmp.path()).unwrap()));
 
     let serve_state = state.clone();
     let serve_bus = bus.clone();
+    let serve_metrics = metrics.clone();
     let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
@@ -181,6 +193,7 @@ async fn apply_rejects_path_traversal_key() {
             serve_state,
             serve_bus,
             serve_knowledge,
+            serve_metrics,
             serve_socket,
             shutdown_rx,
         )

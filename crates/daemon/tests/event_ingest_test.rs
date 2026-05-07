@@ -33,6 +33,10 @@ mod daemon;
 #[path = "../src/ipc.rs"]
 mod ipc;
 
+#[allow(dead_code)]
+#[path = "../src/metrics.rs"]
+mod metrics;
+
 use daemon::DaemonState;
 use event_bus::EventBus;
 
@@ -63,10 +67,12 @@ async fn event_ingest_records_and_appears_in_log() {
 
     let state = Arc::new(RwLock::new(DaemonState::new()));
     let bus = Arc::new(EventBus::new(64));
+    let metrics = Arc::new(RwLock::new(metrics::Metrics::default()));
     let knowledge = Arc::new(RwLock::new(KnowledgeStore::open(tmp.path()).unwrap()));
 
     let serve_state = state.clone();
     let serve_bus = bus.clone();
+    let serve_metrics = metrics.clone();
     let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
@@ -75,6 +81,7 @@ async fn event_ingest_records_and_appears_in_log() {
             serve_state,
             serve_bus,
             serve_knowledge,
+            serve_metrics,
             serve_socket,
             shutdown_rx,
         )
@@ -169,10 +176,12 @@ async fn event_ingest_when_asleep_acks_but_does_not_record() {
 
     let state = Arc::new(RwLock::new(DaemonState::new()));
     let bus = Arc::new(EventBus::new(64));
+    let metrics = Arc::new(RwLock::new(metrics::Metrics::default()));
     let knowledge = Arc::new(RwLock::new(KnowledgeStore::open(tmp.path()).unwrap()));
 
     let serve_state = state.clone();
     let serve_bus = bus.clone();
+    let serve_metrics = metrics.clone();
     let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
@@ -181,6 +190,7 @@ async fn event_ingest_when_asleep_acks_but_does_not_record() {
             serve_state,
             serve_bus,
             serve_knowledge,
+            serve_metrics,
             serve_socket,
             shutdown_rx,
         )

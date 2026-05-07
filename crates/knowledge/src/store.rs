@@ -320,6 +320,16 @@ impl KnowledgeStore {
         }
         Ok(hashes)
     }
+
+    /// Store a style profile (serialized once to a single key).
+    pub fn put_style_profile(&mut self, p: &crate::types::StyleProfile) -> Result<()> {
+        self.put(keys::STYLE_PROFILE_KEY, p)
+    }
+
+    /// Retrieve the cached style profile, or None if not yet computed.
+    pub fn get_style_profile(&mut self) -> Result<Option<crate::types::StyleProfile>> {
+        self.get(keys::STYLE_PROFILE_KEY)
+    }
 }
 
 #[cfg(test)]
@@ -774,5 +784,99 @@ mod tests {
 
         let hashes = store.list_accepted().unwrap();
         assert_eq!(hashes, vec!["dead_beef".to_string()]);
+    }
+
+    #[test]
+    fn test_put_and_get_style_profile() {
+        use crate::types::{BlockStats, StyleProfile, Terseness, ToolStats};
+        use std::collections::HashMap;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        let mut by_tool = HashMap::new();
+        by_tool.insert(
+            "rustc".to_string(),
+            ToolStats {
+                accepts: 5,
+                rejects: 2,
+            },
+        );
+        let mut by_block_kind = HashMap::new();
+        by_block_kind.insert(
+            "patch".to_string(),
+            BlockStats {
+                accepts: 3,
+                rejects: 0,
+            },
+        );
+
+        let profile = StyleProfile {
+            schema_v: 1,
+            generated_at: chrono::Utc::now(),
+            feedback_count: 7,
+            accept_rate_overall: 0.71,
+            by_tool,
+            by_block_kind,
+            preferred_terseness: Terseness::Concise,
+            top_accepted_phrases: vec!["cargo build".into()],
+            top_rejected_phrases: vec![],
+        };
+
+        store.put_style_profile(&profile).unwrap();
+        let retrieved = store.get_style_profile().unwrap().unwrap();
+
+        assert_eq!(retrieved.feedback_count, 7);
+        assert_eq!(retrieved.accept_rate_overall, 0.71);
+        assert_eq!(retrieved.preferred_terseness, Terseness::Concise);
+        assert!(retrieved.by_tool.contains_key("rustc"));
+        assert!(retrieved.by_block_kind.contains_key("patch"));
+    }
+
+    #[test]
+    fn test_style_profile_persistence() {
+        use crate::types::{StyleProfile, Terseness, ToolStats};
+        use std::collections::HashMap;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        {
+            let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+            let mut by_tool = HashMap::new();
+            by_tool.insert(
+                "rustc".to_string(),
+                ToolStats {
+                    accepts: 10,
+                    rejects: 3,
+                },
+            );
+            let profile = StyleProfile {
+                schema_v: 1,
+                generated_at: chrono::Utc::now(),
+                feedback_count: 13,
+                accept_rate_overall: 0.769,
+                by_tool,
+                by_block_kind: HashMap::new(),
+                preferred_terseness: Terseness::Standard,
+                top_accepted_phrases: vec!["error handling".into()],
+                top_rejected_phrases: vec![],
+            };
+            store.put_style_profile(&profile).unwrap();
+        }
+
+        // Reopen and verify
+        {
+            let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+            let retrieved = store.get_style_profile().unwrap().unwrap();
+            assert_eq!(retrieved.feedback_count, 13);
+            assert_eq!(retrieved.preferred_terseness, Terseness::Standard);
+        }
+    }
+
+    #[test]
+    fn test_get_nonexistent_style_profile() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+        let result = store.get_style_profile().unwrap();
+        assert!(result.is_none());
     }
 }

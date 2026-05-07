@@ -11,6 +11,7 @@ use tracing_subscriber::EnvFilter;
 use organism_protocol::{Envelope, EventContext, OrganismEvent, TerminalEvent};
 
 mod cmd_backfill;
+mod cmd_stats;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -21,18 +22,20 @@ async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     let cmd = args.get(1).map(|s| s.as_str()).unwrap_or("help");
 
-    let result = match cmd {
+    let result: Result<()> = match cmd {
         "status" => cmd_status().await,
         "suggest" => cmd_suggest().await,
         "apply" => cmd_apply(&args[2..]).await,
         "feedback" => cmd_feedback(&args[2..]).await,
         "errors" => cmd_errors(&args[2..]).await,
+        "profile" => cmd_profile(&args[2..]).await,
         "doctor" => cmd_doctor().await,
         "log" => cmd_log().await,
         "sleep" => cmd_sleep().await,
         "wake" => cmd_wake().await,
         "emit-terminal" => cmd_emit_terminal(&args[2..]).await,
         "backfill-accepts" => cmd_backfill::cmd_backfill_accepts().await,
+        "stats" => cmd_stats(&args[2..]),
         _ => {
             cmd_help();
             Ok(())
@@ -63,6 +66,10 @@ fn cmd_help() {
     println!("            Record user verdict on a suggestion");
     println!("  errors [--limit N] [--json]");
     println!("            List recent errors (default 20, --json for raw JSON output)");
+    println!("  profile [--rebuild] [--json]");
+    println!(
+        "            Show computed style profile (--rebuild forces recompute, --json for raw JSON)"
+    );
     println!("  doctor    Check knowledge store and daemon health");
     println!("  log       Show recent daemon activity");
     println!("  sleep     Pause all daemon activity");
@@ -71,6 +78,8 @@ fn cmd_help() {
     println!("            Inject a terminal event into the daemon (used by shell hook)");
     println!("  backfill-accepts");
     println!("            Snapshot existing accepted suggestions into immutable table (one-time)");
+    println!("  stats [--json] [--capture-baseline] [--baseline] [--since <DURATION>]");
+    println!("            Show metrics; capture baseline or compare with baseline");
     println!("  help      Show this help");
 }
 
@@ -475,6 +484,83 @@ async fn cmd_errors(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+async fn cmd_profile(args: &[String]) -> Result<()> {
+    let mut rebuild = false;
+    let mut json_output = false;
+
+    for arg in args {
+        match arg.as_str() {
+            "--rebuild" => rebuild = true,
+            "--json" => json_output = true,
+            other => anyhow::bail!("unknown flag in profile: {}", other),
+        }
+    }
+
+    let params = serde_json::json!({"rebuild": rebuild});
+    let envelope = send_request("profile", params).await?;
+
+    let result = envelope
+        .payload
+        .get("result")
+        .cloned()
+        .unwrap_or(envelope.payload);
+    let profile_response: organism_protocol::ProfileResponse = serde_json::from_value(result)?;
+    let profile = &profile_response.profile;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&profile_response)?);
+    } else {
+        // Human-readable format
+        println!(
+            "Profile Status: {}",
+            if profile_response.freshly_built {
+                "freshly built"
+            } else {
+                "cached"
+            }
+        );
+        println!();
+
+        println!("Feedback Count: {}", profile.feedback_count);
+        println!("Accept Rate: {:.1}%", profile.accept_rate_overall * 100.0);
+        println!("Preferred Terseness: {:?}", profile.preferred_terseness);
+        println!();
+
+        // Top 3 tools by activity (accepts + rejects)
+        println!("Top Tools by Activity:");
+        let mut tool_activity: Vec<_> = profile
+            .by_tool
+            .iter()
+            .map(|(name, stats)| {
+                let total = stats.accepts + stats.rejects;
+                (name.clone(), total, stats.accepts, stats.rejects)
+            })
+            .collect();
+        tool_activity.sort_by_key(|(_, total, _, _)| std::cmp::Reverse(*total));
+
+        for (name, total, accepts, rejects) in tool_activity.iter().take(3) {
+            let accept_rate = if *total > 0 {
+                (*accepts as f32 / *total as f32) * 100.0
+            } else {
+                0.0
+            };
+            println!(
+                "  {}: {} total ({} accepted, {} rejected, {:.0}%)",
+                name, total, accepts, rejects, accept_rate
+            );
+        }
+        println!();
+
+        // Top 5 accepted phrases
+        println!("Top Accepted Phrases:");
+        for (i, phrase) in profile.top_accepted_phrases.iter().take(5).enumerate() {
+            println!("  {}. {}", i + 1, phrase);
+        }
+    }
+
+    Ok(())
+}
+
 async fn cmd_doctor() -> Result<()> {
     let dir = data_dir();
     // Best-effort: missing dir is fine, we'll just report empty counts.
@@ -589,6 +675,46 @@ async fn cmd_wake() -> Result<()> {
     let _ = resp;
     println!("Organism resumed");
     Ok(())
+}
+
+fn cmd_stats(args: &[String]) -> Result<()> {
+    let mut json = false;
+    let mut capture_baseline = false;
+    let mut baseline = false;
+    let mut since: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--capture-baseline" => {
+                capture_baseline = true;
+                i += 1;
+            }
+            "--baseline" => {
+                baseline = true;
+                i += 1;
+            }
+            "--since" => {
+                let v = args.get(i + 1).context("--since requires a value")?;
+                since = Some(v.clone());
+                i += 2;
+            }
+            other => anyhow::bail!("unknown flag in stats: {}", other),
+        }
+    }
+
+    let stats_args = cmd_stats::StatsArgs {
+        json,
+        capture_baseline,
+        baseline,
+        since,
+    };
+
+    cmd_stats::cmd_stats(&stats_args)
 }
 
 async fn send_request(method: &str, params: serde_json::Value) -> Result<Envelope> {

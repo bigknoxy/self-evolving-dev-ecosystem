@@ -31,6 +31,10 @@ mod daemon;
 #[path = "../src/ipc.rs"]
 mod ipc;
 
+#[allow(dead_code)]
+#[path = "../src/metrics.rs"]
+mod metrics;
+
 use daemon::DaemonState;
 use event_bus::EventBus;
 
@@ -104,10 +108,12 @@ async fn errors_returns_sorted_list() {
 
     let state = Arc::new(RwLock::new(DaemonState::new()));
     let bus = Arc::new(EventBus::new(64));
+    let metrics = Arc::new(RwLock::new(metrics::Metrics::default()));
     let knowledge = Arc::new(RwLock::new(KnowledgeStore::open(tmp.path()).unwrap()));
 
     let serve_state = state.clone();
     let serve_bus = bus.clone();
+    let serve_metrics = metrics.clone();
     let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
     let (_shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
@@ -116,6 +122,7 @@ async fn errors_returns_sorted_list() {
             serve_state,
             serve_bus,
             serve_knowledge,
+            serve_metrics,
             serve_socket,
             shutdown_rx,
         )
