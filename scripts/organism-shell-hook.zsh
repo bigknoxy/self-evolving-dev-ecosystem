@@ -25,14 +25,28 @@ typeset -g __ORGANISM_LAST_CMD=""
 typeset -g __ORGANISM_LAST_START=0
 
 __organism_now_ms() {
+  # Returns wall-clock time in milliseconds.
+  # Implementation must avoid arithmetic on nanosecond-scale literals;
+  # zsh integer width is 19 digits and `nanos * 1000` overflows.
+  emulate -L zsh
   if zmodload -e zsh/datetime 2>/dev/null || zmodload zsh/datetime 2>/dev/null; then
     local _er=${EPOCHREALTIME}
-    local _sec=${_er%.*} _frac=${_er#*.}
-    _frac=${_frac}000
-    print -r -- "$(( _sec * 1000 + 10#${_frac[1,3]} ))"
-  else
-    print -r -- "$(( $(date +%s) * 1000 ))"
+    # Defensive: only split on dot if a dot is present. Otherwise EPOCHREALTIME
+    # is already an integer (seconds or nanos) and we fall back to date(1).
+    if [[ "$_er" == *.* ]]; then
+      local _sec=${_er%%.*}
+      local _frac=${_er#*.}
+      # Pad to 3 digits, then take exactly 3 chars for milliseconds.
+      _frac="${_frac}000"
+      _frac=${_frac[1,3]}
+      # Strip leading zeros to avoid octal interpretation.
+      _frac=${_frac##0}
+      [[ -z "$_frac" ]] && _frac=0
+      print -r -- "$(( _sec * 1000 + _frac ))"
+      return 0
+    fi
   fi
+  print -r -- "$(( $(date +%s) * 1000 ))"
 }
 
 __organism_preexec() {
