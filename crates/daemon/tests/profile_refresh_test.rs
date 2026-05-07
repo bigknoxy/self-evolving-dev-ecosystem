@@ -26,6 +26,10 @@ mod event_bus;
 mod daemon;
 
 #[allow(dead_code)]
+#[path = "../src/metrics.rs"]
+mod metrics;
+
+#[allow(dead_code)]
 #[path = "../src/ipc.rs"]
 mod ipc;
 
@@ -128,6 +132,7 @@ async fn test_profile_rebuilds_after_events() {
             serve_state,
             serve_bus,
             serve_knowledge,
+            metrics::new_shared(),
             serve_socket,
             shutdown_rx,
         )
@@ -208,6 +213,7 @@ async fn test_rate_limit_blocks_immediate_rebuild() {
             serve_state,
             serve_bus,
             serve_knowledge,
+            metrics::new_shared(),
             serve_socket,
             shutdown_rx,
         )
@@ -302,6 +308,7 @@ async fn test_threshold_with_zero_rate_limit() {
             serve_state,
             serve_bus,
             serve_knowledge,
+            metrics::new_shared(),
             serve_socket,
             shutdown_rx,
         )
