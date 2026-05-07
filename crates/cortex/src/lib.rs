@@ -3,13 +3,17 @@ pub mod context_detector;
 pub mod error_classifier;
 pub mod pattern_engine;
 pub mod redact;
+pub mod style;
 pub mod suggest;
 
 pub use context_detector::*;
 pub use error_classifier::{classify, ErrorSignature};
 pub use pattern_engine::*;
 pub use redact::redact;
+pub use style::{build_profile, classify_block_kind};
 pub use suggest::{suggest_for_error, LlmClient};
+// Re-export from knowledge for convenience
+pub use organism_knowledge::{BlockStats, StyleProfile, Terseness, ToolStats};
 
 #[cfg(test)]
 mod tests {

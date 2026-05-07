@@ -30,6 +30,50 @@ fn is_safe_error_key(key: &str) -> bool {
     !key.is_empty() && key.len() <= 64 && key.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// Build a StyleProfile from the current knowledge store state.
+/// Reads feedback, errors, and accepted suggestions to construct the profile.
+fn build_profile_from_store(
+    store: &mut organism_knowledge::KnowledgeStore,
+) -> anyhow::Result<organism_knowledge::StyleProfile> {
+    use std::collections::HashMap;
+
+    // Load all feedback
+    let feedback = store.list_feedback()?;
+
+    // Build tool_for_hash: map error_hash -> tool
+    let mut tool_for_hash: HashMap<String, String> = HashMap::new();
+    let errors = store.list_errors()?;
+    for err in errors {
+        tool_for_hash.insert(err.hash.clone(), err.tool.clone());
+    }
+
+    // Build accepted_text: map suggestion_hash -> text
+    let mut accepted_text: HashMap<String, String> = HashMap::new();
+    let accepted_hashes = store.list_accepted()?;
+    for hash in accepted_hashes {
+        if let Some(acc) = store.get_accepted(&hash)? {
+            accepted_text.insert(hash, acc.text);
+        }
+    }
+
+    // Build block_kind_for_suggestion: map suggestion_hash -> "patch"|"shell"|"note"
+    let mut block_kind_for_suggestion: HashMap<String, String> = HashMap::new();
+    for (hash, text) in &accepted_text {
+        let kind = organism_cortex::classify_block_kind(text);
+        block_kind_for_suggestion.insert(hash.clone(), kind.to_string());
+    }
+
+    // Invoke cortex to build the profile
+    let profile = organism_cortex::build_profile(
+        &feedback,
+        &accepted_text,
+        &tool_for_hash,
+        &block_kind_for_suggestion,
+    );
+
+    Ok(profile)
+}
+
 /// Bind a Unix socket at `socket_path` and serve incoming RPC requests.
 /// Cleans up any stale socket file before binding.
 /// Listens for shutdown signal and stops accepting new connections.
@@ -433,6 +477,62 @@ async fn dispatch(
             }
 
             let resp = FeedbackResponse { ok: true };
+            match serde_json::to_value(resp) {
+                Ok(v) => Envelope::ok_response(&req.id, v),
+                Err(e) => {
+                    Envelope::error_response(&req.id, &format!("response serialize failed: {}", e))
+                }
+            }
+        }
+        "profile" => {
+            let params = req
+                .payload
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let req_data: organism_protocol::ProfileRequest =
+                serde_json::from_value(params).unwrap_or_default();
+
+            let mut store = knowledge.write().await;
+
+            // Decide whether to rebuild
+            let should_rebuild =
+                req_data.rebuild || !matches!(store.get_style_profile(), Ok(Some(_)));
+
+            let profile = if should_rebuild {
+                match build_profile_from_store(&mut store) {
+                    Ok(p) => {
+                        // Persist the newly built profile
+                        let _ = store.put_style_profile(&p);
+                        p
+                    }
+                    Err(e) => {
+                        return Envelope::error_response(
+                            &req.id,
+                            &format!("failed to build profile: {}", e),
+                        );
+                    }
+                }
+            } else {
+                match store.get_style_profile() {
+                    Ok(Some(p)) => p,
+                    Ok(None) => {
+                        // Should not happen due to check above, but fallback to empty
+                        organism_knowledge::StyleProfile::empty()
+                    }
+                    Err(e) => {
+                        return Envelope::error_response(
+                            &req.id,
+                            &format!("failed to retrieve cached profile: {}", e),
+                        );
+                    }
+                }
+            };
+
+            let resp = organism_protocol::ProfileResponse {
+                profile,
+                freshly_built: should_rebuild,
+            };
             match serde_json::to_value(resp) {
                 Ok(v) => Envelope::ok_response(&req.id, v),
                 Err(e) => {
