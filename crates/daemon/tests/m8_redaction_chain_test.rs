@@ -102,7 +102,7 @@ async fn test_m8_redaction_chain_with_mock_llm() -> Result<()> {
     };
 
     // Call the suggest pipeline
-    let suggestion = suggest_for_error(&client, &mut ctx.store, "pii_test_hash").await?;
+    let suggestion = suggest_for_error(&client, &mut ctx.store, "pii_test_hash", false).await?;
 
     // Verify the response
     assert!(suggestion.contains("Try checking the configuration file."));
