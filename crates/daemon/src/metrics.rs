@@ -39,6 +39,7 @@ impl Default for Metrics {
 
 pub type SharedMetrics = Arc<RwLock<Metrics>>;
 
+#[allow(dead_code)]
 pub fn new_shared() -> SharedMetrics {
     Arc::new(RwLock::new(Metrics::default()))
 }

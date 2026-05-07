@@ -22,6 +22,7 @@ use organism_protocol::{
 use crate::clipboard;
 use crate::daemon::DaemonState;
 use crate::event_bus::EventBus;
+use crate::metrics::SharedMetrics;
 use organism_cortex::apply::{extract_plans, ApplyPlan};
 use organism_knowledge::{AcceptedSuggestion, FeedbackRecord, KnowledgeStore, Verdict};
 use tokio::sync::RwLock;
@@ -37,6 +38,7 @@ pub async fn serve(
     state: Arc<RwLock<DaemonState>>,
     bus: Arc<EventBus>,
     knowledge: Arc<RwLock<KnowledgeStore>>,
+    metrics: SharedMetrics,
     socket_path: PathBuf,
     mut shutdown: broadcast::Receiver<()>,
 ) -> Result<()> {
@@ -67,9 +69,10 @@ pub async fn serve(
                         let state_clone = state.clone();
                         let bus_clone = bus.clone();
                         let knowledge_clone = knowledge.clone();
+                        let metrics_clone = metrics.clone();
                         tokio::spawn(async move {
                             if let Err(e) =
-                                handle_connection(state_clone, bus_clone, knowledge_clone, stream).await
+                                handle_connection(state_clone, bus_clone, knowledge_clone, metrics_clone, stream).await
                             {
                                 warn!(error = %e, "ipc connection error");
                             }
@@ -91,6 +94,7 @@ async fn handle_connection(
     state: Arc<RwLock<DaemonState>>,
     bus: Arc<EventBus>,
     knowledge: Arc<RwLock<KnowledgeStore>>,
+    metrics: SharedMetrics,
     stream: UnixStream,
 ) -> Result<()> {
     let (read_half, mut write_half) = stream.into_split();
@@ -105,7 +109,7 @@ async fn handle_connection(
     debug!(line = %line.trim(), "ipc request");
 
     let response = match serde_json::from_str::<Envelope>(line.trim()) {
-        Ok(env) => dispatch(state, bus, knowledge, env).await,
+        Ok(env) => dispatch(state, bus, knowledge, metrics, env).await,
         Err(e) => Envelope::error_response("0", &format!("invalid envelope: {}", e)),
     };
 
@@ -120,6 +124,7 @@ async fn dispatch(
     state: Arc<RwLock<DaemonState>>,
     bus: Arc<EventBus>,
     knowledge: Arc<RwLock<KnowledgeStore>>,
+    metrics: SharedMetrics,
     req: Envelope,
 ) -> Envelope {
     // Extract method from request payload (Envelope::request format).
@@ -384,6 +389,14 @@ async fn dispatch(
                 }
             };
 
+            // Try to get the tool from the error record
+            let tool = store
+                .get_error(&req_data.error_key)
+                .ok()
+                .flatten()
+                .map(|e| e.tool)
+                .unwrap_or_else(|| "unknown".to_string());
+
             // Hash suggestion text
             let mut hasher = sha2::Sha256::new();
             hasher.update(suggestion.as_bytes());
@@ -417,6 +430,33 @@ async fn dispatch(
                     &req.id,
                     &format!("failed to store feedback: {}", e),
                 );
+            }
+
+            // Update metrics based on verdict
+            match fb.verdict {
+                Verdict::Accepted => {
+                    metrics.write().await.feedback_accept += 1;
+                    metrics
+                        .write()
+                        .await
+                        .by_tool
+                        .entry(tool.clone())
+                        .or_default()
+                        .accepts += 1;
+                }
+                Verdict::Rejected => {
+                    metrics.write().await.feedback_reject += 1;
+                    metrics
+                        .write()
+                        .await
+                        .by_tool
+                        .entry(tool.clone())
+                        .or_default()
+                        .rejects += 1;
+                }
+                Verdict::Ignored => {
+                    // No counter for ignored verdicts
+                }
             }
 
             if matches!(fb.verdict, Verdict::Accepted) {
@@ -767,5 +807,93 @@ mod tests {
         run_snapshot(&mut store, &fb);
 
         assert!(store.get_accepted("sugg_hash_rejected").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_feedback_accepted_bumps_metrics() {
+        use crate::metrics;
+        use chrono::Utc;
+        use organism_knowledge::ErrorRecord;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        // Create error with tool field
+        let error = ErrorRecord {
+            tool: "rustfmt".to_string(),
+            kind: "E0599".to_string(),
+            hash: "err_test1".to_string(),
+            raw_excerpt: "error".to_string(),
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+            occurrences: 1,
+            last_command: "cargo fmt".to_string(),
+            schema_v: 1,
+        };
+        store.put_error(&error).unwrap();
+        store
+            .put_suggestion("err_test1", "Add derive(Clone)")
+            .unwrap();
+
+        let fb = make_fb("err_test1", "sugg_hash_accept", Verdict::Accepted);
+        store.put_feedback(&fb).unwrap();
+
+        let metrics = metrics::new_shared();
+        // Simulate the feedback handler's metrics update
+        metrics.write().await.feedback_accept += 1;
+        metrics
+            .write()
+            .await
+            .by_tool
+            .entry("rustfmt".to_string())
+            .or_default()
+            .accepts += 1;
+
+        let m = metrics.read().await;
+        assert_eq!(m.feedback_accept, 1);
+        assert_eq!(m.by_tool["rustfmt"].accepts, 1);
+    }
+
+    #[tokio::test]
+    async fn test_feedback_rejected_bumps_metrics() {
+        use crate::metrics;
+        use chrono::Utc;
+        use organism_knowledge::ErrorRecord;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = KnowledgeStore::open(tmp.path()).unwrap();
+
+        // Create error with tool field
+        let error = ErrorRecord {
+            tool: "cargo".to_string(),
+            kind: "E0599".to_string(),
+            hash: "err_test2".to_string(),
+            raw_excerpt: "error".to_string(),
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+            occurrences: 1,
+            last_command: "cargo build".to_string(),
+            schema_v: 1,
+        };
+        store.put_error(&error).unwrap();
+        store.put_suggestion("err_test2", "Add impl block").unwrap();
+
+        let fb = make_fb("err_test2", "sugg_hash_reject", Verdict::Rejected);
+        store.put_feedback(&fb).unwrap();
+
+        let metrics = metrics::new_shared();
+        // Simulate the feedback handler's metrics update
+        metrics.write().await.feedback_reject += 1;
+        metrics
+            .write()
+            .await
+            .by_tool
+            .entry("cargo".to_string())
+            .or_default()
+            .rejects += 1;
+
+        let m = metrics.read().await;
+        assert_eq!(m.feedback_reject, 1);
+        assert_eq!(m.by_tool["cargo"].rejects, 1);
     }
 }

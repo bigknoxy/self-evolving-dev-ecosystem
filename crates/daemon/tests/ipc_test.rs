@@ -36,6 +36,10 @@ mod daemon;
 #[path = "../src/ipc.rs"]
 mod ipc;
 
+#[allow(dead_code)]
+#[path = "../src/metrics.rs"]
+mod metrics;
+
 use daemon::DaemonState;
 use event_bus::EventBus;
 
@@ -75,10 +79,12 @@ async fn ipc_status_sleep_wake_log_flow() {
 
     let state = Arc::new(RwLock::new(DaemonState::new()));
     let bus = Arc::new(EventBus::new(64));
+    let metrics = Arc::new(RwLock::new(metrics::Metrics::default()));
     let knowledge = Arc::new(RwLock::new(KnowledgeStore::open(tmp.path()).unwrap()));
 
     let serve_state = state.clone();
     let serve_bus = bus.clone();
+    let serve_metrics = metrics.clone();
     let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
     let (_shutdown_tx, shutdown_rx) = broadcast::channel(1);
@@ -87,6 +93,7 @@ async fn ipc_status_sleep_wake_log_flow() {
             serve_state,
             serve_bus,
             serve_knowledge,
+            serve_metrics,
             serve_socket,
             shutdown_rx,
         )
@@ -137,6 +144,7 @@ async fn ipc_feedback_flow() {
 
     let state = Arc::new(RwLock::new(DaemonState::new()));
     let bus = Arc::new(EventBus::new(64));
+    let metrics = Arc::new(RwLock::new(metrics::Metrics::default()));
     let knowledge = Arc::new(RwLock::new(KnowledgeStore::open(tmp.path()).unwrap()));
 
     // Seed an error and suggestion into knowledge store
@@ -163,6 +171,7 @@ async fn ipc_feedback_flow() {
 
     let serve_state = state.clone();
     let serve_bus = bus.clone();
+    let serve_metrics = metrics.clone();
     let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
     let (_shutdown_tx, shutdown_rx) = broadcast::channel(1);
@@ -171,6 +180,7 @@ async fn ipc_feedback_flow() {
             serve_state,
             serve_bus,
             serve_knowledge,
+            serve_metrics,
             serve_socket,
             shutdown_rx,
         )
@@ -243,6 +253,7 @@ async fn ipc_apply_stage_auto_records_feedback() {
 
     let state = Arc::new(RwLock::new(DaemonState::new()));
     let bus = Arc::new(EventBus::new(64));
+    let metrics = Arc::new(RwLock::new(metrics::Metrics::default()));
     let knowledge = Arc::new(RwLock::new(KnowledgeStore::open(tmp.path()).unwrap()));
 
     // Seed an error and suggestion into knowledge store
@@ -269,6 +280,7 @@ async fn ipc_apply_stage_auto_records_feedback() {
 
     let serve_state = state.clone();
     let serve_bus = bus.clone();
+    let serve_metrics = metrics.clone();
     let serve_knowledge = knowledge.clone();
     let serve_socket = socket_path.clone();
     let (_shutdown_tx, shutdown_rx) = broadcast::channel(1);
@@ -277,6 +289,7 @@ async fn ipc_apply_stage_auto_records_feedback() {
             serve_state,
             serve_bus,
             serve_knowledge,
+            serve_metrics,
             serve_socket,
             shutdown_rx,
         )
