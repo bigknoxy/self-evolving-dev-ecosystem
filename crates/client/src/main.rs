@@ -488,15 +488,19 @@ async fn cmd_profile(args: &[String]) -> Result<()> {
         match arg.as_str() {
             "--rebuild" => rebuild = true,
             "--json" => json_output = true,
-            _ => {}
+            other => anyhow::bail!("unknown flag in profile: {}", other),
         }
     }
 
     let params = serde_json::json!({"rebuild": rebuild});
     let envelope = send_request("profile", params).await?;
 
-    let profile_response: organism_protocol::ProfileResponse =
-        serde_json::from_value(envelope.payload)?;
+    let result = envelope
+        .payload
+        .get("result")
+        .cloned()
+        .unwrap_or(envelope.payload);
+    let profile_response: organism_protocol::ProfileResponse = serde_json::from_value(result)?;
     let profile = &profile_response.profile;
 
     if json_output {
