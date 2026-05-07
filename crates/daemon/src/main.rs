@@ -175,6 +175,11 @@ async fn main() -> anyhow::Result<()> {
     // Run event loop (keeps daemon alive); exits on ctrl_c.
     daemon.run_event_loop().await;
 
+    // Snapshot metrics on shutdown (best-effort)
+    if let Err(e) = metrics::snapshot(&shared_metrics, &data_dir).await {
+        tracing::warn!(error = %e, "failed to snapshot metrics on shutdown");
+    }
+
     // Best-effort cleanup of socket file on shutdown.
     let _ = std::fs::remove_file(&socket_path);
 

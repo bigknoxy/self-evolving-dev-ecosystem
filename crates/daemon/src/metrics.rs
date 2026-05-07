@@ -1,41 +1,10 @@
 use anyhow::Result;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ToolMetrics {
-    pub accepts: u64,
-    pub rejects: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Metrics {
-    pub suggestions_total: u64,
-    pub suggestions_cached: u64,
-    pub feedback_accept: u64,
-    pub feedback_reject: u64,
-    pub by_tool: HashMap<String, ToolMetrics>,
-    pub since: DateTime<Utc>,
-    pub prompt_version: String, // e.g. "m11-fewshot-v1" for cohort tracking
-}
-
-impl Default for Metrics {
-    fn default() -> Self {
-        Self {
-            suggestions_total: 0,
-            suggestions_cached: 0,
-            feedback_accept: 0,
-            feedback_reject: 0,
-            by_tool: HashMap::new(),
-            since: Utc::now(),
-            prompt_version: "v1".to_string(),
-        }
-    }
-}
+#[allow(unused_imports)]
+pub use organism_protocol::{Metrics, ToolMetrics};
 
 pub type SharedMetrics = Arc<RwLock<Metrics>>;
 

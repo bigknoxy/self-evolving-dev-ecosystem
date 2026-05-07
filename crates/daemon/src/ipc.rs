@@ -202,6 +202,14 @@ async fn dispatch(
                 _ => (String::new(), false),
             };
 
+            // Bump suggestions metrics
+            let mut m = metrics.write().await;
+            m.suggestions_total += 1;
+            if cached {
+                m.suggestions_cached += 1;
+            }
+            drop(m);
+
             Envelope::ok_response(
                 &req.id,
                 serde_json::to_value(SuggestResponse { text, cached }).unwrap(),
@@ -432,27 +440,17 @@ async fn dispatch(
                 );
             }
 
-            // Update metrics based on verdict
+            // Update metrics based on verdict (single write-lock for atomicity)
             match fb.verdict {
                 Verdict::Accepted => {
-                    metrics.write().await.feedback_accept += 1;
-                    metrics
-                        .write()
-                        .await
-                        .by_tool
-                        .entry(tool.clone())
-                        .or_default()
-                        .accepts += 1;
+                    let mut m = metrics.write().await;
+                    m.feedback_accept += 1;
+                    m.by_tool.entry(tool.clone()).or_default().accepts += 1;
                 }
                 Verdict::Rejected => {
-                    metrics.write().await.feedback_reject += 1;
-                    metrics
-                        .write()
-                        .await
-                        .by_tool
-                        .entry(tool.clone())
-                        .or_default()
-                        .rejects += 1;
+                    let mut m = metrics.write().await;
+                    m.feedback_reject += 1;
+                    m.by_tool.entry(tool.clone()).or_default().rejects += 1;
                 }
                 Verdict::Ignored => {
                     // No counter for ignored verdicts
@@ -811,6 +809,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_feedback_accepted_bumps_metrics() {
+        use crate::daemon::DaemonState;
+        use crate::event_bus::EventBus;
         use crate::metrics;
         use chrono::Utc;
         use organism_knowledge::ErrorRecord;
@@ -818,11 +818,12 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut store = KnowledgeStore::open(tmp.path()).unwrap();
 
-        // Create error with tool field
+        // Create error with tool field (use hex for error hash)
+        let error_hash = "abcd1234".to_string();
         let error = ErrorRecord {
             tool: "rustfmt".to_string(),
             kind: "E0599".to_string(),
-            hash: "err_test1".to_string(),
+            hash: error_hash.clone(),
             raw_excerpt: "error".to_string(),
             first_seen: Utc::now(),
             last_seen: Utc::now(),
@@ -832,23 +833,27 @@ mod tests {
         };
         store.put_error(&error).unwrap();
         store
-            .put_suggestion("err_test1", "Add derive(Clone)")
+            .put_suggestion(&error_hash, "Add derive(Clone)")
             .unwrap();
 
-        let fb = make_fb("err_test1", "sugg_hash_accept", Verdict::Accepted);
-        store.put_feedback(&fb).unwrap();
-
+        // Wrap store in shared state
+        let knowledge = Arc::new(RwLock::new(store));
+        let state = Arc::new(RwLock::new(DaemonState::new()));
+        let bus = Arc::new(EventBus::new(1024));
         let metrics = metrics::new_shared();
-        // Simulate the feedback handler's metrics update
-        metrics.write().await.feedback_accept += 1;
-        metrics
-            .write()
-            .await
-            .by_tool
-            .entry("rustfmt".to_string())
-            .or_default()
-            .accepts += 1;
 
+        // Build feedback request envelope with params matching FeedbackRequest
+        let feedback_req = organism_protocol::FeedbackRequest {
+            error_key: error_hash.clone(),
+            verdict: "accept".to_string(),
+            note: None,
+        };
+        let req = Envelope::request("feedback", serde_json::to_value(feedback_req).unwrap());
+
+        // Dispatch the request
+        let _ = dispatch(state, bus, knowledge, metrics.clone(), req).await;
+
+        // Verify metrics were bumped
         let m = metrics.read().await;
         assert_eq!(m.feedback_accept, 1);
         assert_eq!(m.by_tool["rustfmt"].accepts, 1);
@@ -856,6 +861,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_feedback_rejected_bumps_metrics() {
+        use crate::daemon::DaemonState;
+        use crate::event_bus::EventBus;
         use crate::metrics;
         use chrono::Utc;
         use organism_knowledge::ErrorRecord;
@@ -863,11 +870,12 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut store = KnowledgeStore::open(tmp.path()).unwrap();
 
-        // Create error with tool field
+        // Create error with tool field (use hex for error hash)
+        let error_hash = "def5678a".to_string();
         let error = ErrorRecord {
             tool: "cargo".to_string(),
             kind: "E0599".to_string(),
-            hash: "err_test2".to_string(),
+            hash: error_hash.clone(),
             raw_excerpt: "error".to_string(),
             first_seen: Utc::now(),
             last_seen: Utc::now(),
@@ -876,22 +884,26 @@ mod tests {
             schema_v: 1,
         };
         store.put_error(&error).unwrap();
-        store.put_suggestion("err_test2", "Add impl block").unwrap();
+        store.put_suggestion(&error_hash, "Add impl block").unwrap();
 
-        let fb = make_fb("err_test2", "sugg_hash_reject", Verdict::Rejected);
-        store.put_feedback(&fb).unwrap();
-
+        // Wrap store in shared state
+        let knowledge = Arc::new(RwLock::new(store));
+        let state = Arc::new(RwLock::new(DaemonState::new()));
+        let bus = Arc::new(EventBus::new(1024));
         let metrics = metrics::new_shared();
-        // Simulate the feedback handler's metrics update
-        metrics.write().await.feedback_reject += 1;
-        metrics
-            .write()
-            .await
-            .by_tool
-            .entry("cargo".to_string())
-            .or_default()
-            .rejects += 1;
 
+        // Build feedback request envelope with params matching FeedbackRequest
+        let feedback_req = organism_protocol::FeedbackRequest {
+            error_key: error_hash.clone(),
+            verdict: "reject".to_string(),
+            note: None,
+        };
+        let req = Envelope::request("feedback", serde_json::to_value(feedback_req).unwrap());
+
+        // Dispatch the request
+        let _ = dispatch(state, bus, knowledge, metrics.clone(), req).await;
+
+        // Verify metrics were bumped
         let m = metrics.read().await;
         assert_eq!(m.feedback_reject, 1);
         assert_eq!(m.by_tool["cargo"].rejects, 1);

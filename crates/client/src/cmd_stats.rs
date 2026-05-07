@@ -1,42 +1,9 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
 use crate::data_dir;
-
-// Local Metrics struct for client-side use
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ToolMetrics {
-    pub accepts: u64,
-    pub rejects: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Metrics {
-    pub suggestions_total: u64,
-    pub suggestions_cached: u64,
-    pub feedback_accept: u64,
-    pub feedback_reject: u64,
-    pub by_tool: HashMap<String, ToolMetrics>,
-    pub since: DateTime<Utc>,
-    pub prompt_version: String,
-}
-
-impl Default for Metrics {
-    fn default() -> Self {
-        Self {
-            suggestions_total: 0,
-            suggestions_cached: 0,
-            feedback_accept: 0,
-            feedback_reject: 0,
-            by_tool: HashMap::new(),
-            since: Utc::now(),
-            prompt_version: "v1".to_string(),
-        }
-    }
-}
+use organism_protocol::{Metrics, ToolMetrics};
 
 /// Parse duration strings like "7d", "24h", "30m" into seconds.
 pub fn parse_duration(s: &str) -> Result<u64> {
@@ -75,24 +42,8 @@ pub fn parse_duration(s: &str) -> Result<u64> {
     Ok(secs)
 }
 
-/// Delta between two Metrics structs.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct MetricsDelta {
-    pub suggestions_total: u64,
-    pub suggestions_cached: u64,
-    pub feedback_accept: u64,
-    pub feedback_reject: u64,
-    pub by_tool: HashMap<String, ToolDelta>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ToolDelta {
-    pub accepts: u64,
-    pub rejects: u64,
-}
-
-/// Compute delta using saturating subtraction.
-pub fn compute_delta(current: &Metrics, baseline: &Metrics) -> MetricsDelta {
+/// Compute delta using saturating subtraction. Returns a Metrics struct with delta values.
+pub fn compute_delta(current: &Metrics, baseline: &Metrics) -> Metrics {
     let mut by_tool = HashMap::new();
 
     // Process all tools from current
@@ -103,14 +54,14 @@ pub fn compute_delta(current: &Metrics, baseline: &Metrics) -> MetricsDelta {
 
         by_tool.insert(
             tool_name.clone(),
-            ToolDelta {
+            ToolMetrics {
                 accepts: tool_metrics.accepts.saturating_sub(base_accepts),
                 rejects: tool_metrics.rejects.saturating_sub(base_rejects),
             },
         );
     }
 
-    MetricsDelta {
+    Metrics {
         suggestions_total: current
             .suggestions_total
             .saturating_sub(baseline.suggestions_total),
@@ -124,6 +75,8 @@ pub fn compute_delta(current: &Metrics, baseline: &Metrics) -> MetricsDelta {
             .feedback_reject
             .saturating_sub(baseline.feedback_reject),
         by_tool,
+        since: current.since,
+        prompt_version: current.prompt_version.clone(),
     }
 }
 
@@ -138,8 +91,28 @@ fn format_acceptance_ratio(accepts: u64, rejects: u64) -> String {
     }
 }
 
+/// Format a counter block for current or delta metrics.
+fn format_counter_block(
+    title: &str,
+    suggestions_total: u64,
+    suggestions_cached: u64,
+    feedback_accept: u64,
+    feedback_reject: u64,
+) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("{}:\n", title));
+    output.push_str(&format!("  suggestions total: {}\n", suggestions_total));
+    output.push_str(&format!("  suggestions cached: {}\n", suggestions_cached));
+    output.push_str(&format!("  feedback accept: {}\n", feedback_accept));
+    output.push_str(&format!("  feedback reject: {}\n", feedback_reject));
+
+    let acceptance = format_acceptance_ratio(feedback_accept, feedback_reject);
+    output.push_str(&format!("  acceptance: {}\n", acceptance));
+    output
+}
+
 /// Pretty-print Metrics struct (human-readable format).
-fn format_metrics_human(metrics: &Metrics, delta: Option<&MetricsDelta>) -> String {
+fn format_metrics_human(metrics: &Metrics, delta: Option<&Metrics>) -> String {
     let mut output = String::new();
 
     // Header with timestamp
@@ -149,20 +122,13 @@ fn format_metrics_human(metrics: &Metrics, delta: Option<&MetricsDelta>) -> Stri
     output.push('\n');
 
     // Current metrics
-    output.push_str("Current:\n");
-    output.push_str(&format!(
-        "  suggestions total: {}\n",
-        metrics.suggestions_total
+    output.push_str(&format_counter_block(
+        "Current",
+        metrics.suggestions_total,
+        metrics.suggestions_cached,
+        metrics.feedback_accept,
+        metrics.feedback_reject,
     ));
-    output.push_str(&format!(
-        "  suggestions cached: {}\n",
-        metrics.suggestions_cached
-    ));
-    output.push_str(&format!("  feedback accept: {}\n", metrics.feedback_accept));
-    output.push_str(&format!("  feedback reject: {}\n", metrics.feedback_reject));
-
-    let acceptance = format_acceptance_ratio(metrics.feedback_accept, metrics.feedback_reject);
-    output.push_str(&format!("  acceptance: {}\n", acceptance));
 
     // By-tool breakdown
     if !metrics.by_tool.is_empty() {
@@ -181,21 +147,14 @@ fn format_metrics_human(metrics: &Metrics, delta: Option<&MetricsDelta>) -> Stri
 
     // Delta section (if baseline provided)
     if let Some(delta) = delta {
-        output.push_str("\nDelta vs baseline:\n");
-        output.push_str(&format!(
-            "  suggestions total: +{}\n",
-            delta.suggestions_total
+        output.push('\n');
+        output.push_str(&format_counter_block(
+            "Delta vs baseline",
+            delta.suggestions_total,
+            delta.suggestions_cached,
+            delta.feedback_accept,
+            delta.feedback_reject,
         ));
-        output.push_str(&format!(
-            "  suggestions cached: +{}\n",
-            delta.suggestions_cached
-        ));
-        output.push_str(&format!("  feedback accept: +{}\n", delta.feedback_accept));
-        output.push_str(&format!("  feedback reject: +{}\n", delta.feedback_reject));
-
-        let delta_acceptance =
-            format_acceptance_ratio(delta.feedback_accept, delta.feedback_reject);
-        output.push_str(&format!("  acceptance: {}\n", delta_acceptance));
 
         if !delta.by_tool.is_empty() {
             output.push_str("\nBy tool (delta):\n");
@@ -225,7 +184,12 @@ pub struct StatsArgs {
 pub fn cmd_stats(args: &StatsArgs) -> Result<()> {
     let dir = data_dir();
     std::fs::create_dir_all(&dir).context("creating data directory")?;
+    cmd_stats_in(&dir, args)
+}
 
+/// Inner function for cmd_stats that operates on a given directory.
+/// This allows tests to use temp directories without env variables.
+pub fn cmd_stats_in(dir: &Path, args: &StatsArgs) -> Result<()> {
     // Handle capture-baseline mode
     if args.capture_baseline {
         let snapshot_path = dir.join("metrics_snapshot.json");
@@ -251,12 +215,12 @@ pub fn cmd_stats(args: &StatsArgs) -> Result<()> {
 
     // Load baseline if it exists and relevant
     let baseline = if args.baseline || args.json {
-        load_baseline(&dir)
+        load_baseline(dir)
     } else {
         None
     };
 
-    // Parse --since duration if provided
+    // Parse --since duration if provided (validation only; display original string)
     let since_display = if let Some(since_str) = &args.since {
         parse_duration(since_str).context(format!("invalid --since value '{}'", since_str))?;
         format!(", showing metrics since {}", since_str)
@@ -328,9 +292,7 @@ mod tests {
             since: None,
         };
 
-        // Point to empty dir
-        std::env::set_var("ORGANISM_HOME", dir.path());
-        let result = cmd_stats(&args);
+        let result = cmd_stats_in(dir.path(), &args);
         assert!(result.is_ok(), "should handle missing metrics gracefully");
     }
 
@@ -398,8 +360,6 @@ mod tests {
         let json = serde_json::to_string_pretty(&metrics).unwrap();
         std::fs::write(&snapshot_path, &json).unwrap();
 
-        std::env::set_var("ORGANISM_HOME", dir.path());
-
         let args = StatsArgs {
             json: false,
             capture_baseline: true,
@@ -407,7 +367,7 @@ mod tests {
             since: None,
         };
 
-        let result = cmd_stats(&args);
+        let result = cmd_stats_in(dir.path(), &args);
         assert!(result.is_ok(), "capture should succeed");
         assert!(baseline_path.exists(), "baseline file should exist");
 
@@ -418,7 +378,6 @@ mod tests {
     #[test]
     fn test_capture_baseline_errors_without_snapshot() {
         let dir = TempDir::new().unwrap();
-        std::env::set_var("ORGANISM_HOME", dir.path());
 
         let args = StatsArgs {
             json: false,
@@ -427,7 +386,7 @@ mod tests {
             since: None,
         };
 
-        let result = cmd_stats(&args);
+        let result = cmd_stats_in(dir.path(), &args);
         assert!(
             result.is_err(),
             "capture should error when no snapshot exists"
