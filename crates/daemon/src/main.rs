@@ -9,6 +9,7 @@ mod error_subscriber;
 mod event_bus;
 mod ipc;
 mod metrics;
+mod notify;
 mod ollama_subscriber;
 mod sensors;
 

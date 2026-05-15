@@ -203,3 +203,5 @@ Implemented all three M3 tasks:
 - M3-03: Set rotation policy to DAILY with max_log_files(7) via Builder API
 
 Key insight: tracing-appender::rolling::Builder is available in 0.2.5 with full rotation config. Guard must be bound in main() scope to prevent log truncation on drop.
+
+## Completed: M13 — Proactive Suggestion Notify — 2026-05-15

@@ -1,6 +1,8 @@
 # Plan: L5 Digital Twin — Use the Signal
 
 > **REVISION 2026-05-06 — /autoplan Phase 4 synthesis (CEO + Eng + DX + Codex).** Read **PLAN REVISION NOTES** below before dispatching any subagent. Several tasks reference fields/code that don't exist in the current codebase; subagent hand-off without these patches will produce non-compiling code.
+>
+> **REVISION 2026-05-15 — /autoplan Phase 4 synthesis (CEO + Eng + DX).** D12 RESOLVED: **M12 DROPPED** — model staleness risk (qwen2.5-coder:7b superseded before gate clears; Modelfile format churn). Revisit as L7 when base model ecosystem stabilizes. **Active remaining work: M13 only.** Implementation spec: `~/.claude/plans/m12-m13-organism-twin-notify.md`.
 
 ---
 

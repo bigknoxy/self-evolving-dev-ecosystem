@@ -18,6 +18,7 @@ use organism_protocol::{ErrorClassifiedEvent, OrganismEvent};
 
 use crate::event_bus::EventBus;
 use crate::metrics::SharedMetrics;
+use crate::notify;
 
 /// Outcome of processing an error event for suggestion generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +83,36 @@ pub async fn handle_event<C: LlmClient>(
                 m.write().await.suggestions_total += 1;
             }
             info!(hash = %event.hash, "ollama_subscriber: suggestion generated and cached");
+
+            // Proactive notify: fires when ORGANISM_NOTIFY=1 and error is
+            // high-confidence (occurrences >= 3, per-tool accept rate >= 0.7).
+            if std::env::var("ORGANISM_NOTIFY").as_deref() == Ok("1") {
+                if let Ok(Some(record)) = store.get_error(&event.hash) {
+                    let tool_rate = store
+                        .get_style_profile()
+                        .ok()
+                        .flatten()
+                        .and_then(|p| p.by_tool.get(&record.tool).cloned())
+                        .map(|s| {
+                            let total = s.accepts + s.rejects;
+                            if total == 0 {
+                                0.0f32
+                            } else {
+                                s.accepts as f32 / total as f32
+                            }
+                        })
+                        .unwrap_or(0.0);
+                    if record.occurrences >= 3 && tool_rate >= 0.7 {
+                        if let Err(e) = notify::notify(
+                            "organism: suggestion ready",
+                            &format!("{} (occ {})", record.last_command, record.occurrences),
+                        ) {
+                            warn!(error = %e, "ollama_subscriber: notify failed");
+                        }
+                    }
+                }
+            }
+
             Ok(SubscriberOutcome::Generated)
         }
         Err(e) => {
@@ -398,5 +429,143 @@ mod tests {
         // Verify counter was bumped
         let m = metrics.read().await;
         assert_eq!(m.suggestions_total, 1);
+    }
+
+    // ── M13 notify threshold tests ───────────────────────────────────────────
+
+    fn make_error(hash: &str, tool: &str, occurrences: u64) -> ErrorRecord {
+        ErrorRecord {
+            tool: tool.to_string(),
+            kind: "E0599".to_string(),
+            hash: hash.to_string(),
+            raw_excerpt: "test error".to_string(),
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+            occurrences,
+            last_command: "cargo build".to_string(),
+            schema_v: 1,
+        }
+    }
+
+    fn make_event(hash: &str, tool: &str) -> ErrorClassifiedEvent {
+        ErrorClassifiedEvent {
+            ts: Utc::now(),
+            hash: hash.to_string(),
+            tool: tool.to_string(),
+            error_kind: "E0599".to_string(),
+            command: "cargo build".to_string(),
+            is_first_in_window: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_notify_gate_off_does_not_crash() {
+        // ORGANISM_NOTIFY unset → notify block skipped entirely.
+        std::env::remove_var("ORGANISM_NOTIFY");
+
+        let tmp = TempDir::new().expect("tempdir");
+        let mut store = KnowledgeStore::open(tmp.path()).expect("store");
+        let err = make_error("notify_hash_1", "cargo", 5);
+        store.put_error(&err).expect("put error");
+
+        let event = make_event("notify_hash_1", "cargo");
+        let mock = MockLlmClient {
+            response: "suggestion".to_string(),
+        };
+        let mut seen = HashSet::new();
+        let outcome = handle_event(event, &mut store, &mock, &mut seen, None)
+            .await
+            .expect("handle_event");
+        assert_eq!(outcome, SubscriberOutcome::Generated);
+    }
+
+    #[tokio::test]
+    async fn test_notify_below_occurrence_threshold_does_not_crash() {
+        // ORGANISM_NOTIFY=1 but occurrences=2 < 3 → notify not called.
+        std::env::set_var("ORGANISM_NOTIFY", "1");
+
+        let tmp = TempDir::new().expect("tempdir");
+        let mut store = KnowledgeStore::open(tmp.path()).expect("store");
+        let err = make_error("notify_hash_2", "cargo", 2);
+        store.put_error(&err).expect("put error");
+
+        let event = make_event("notify_hash_2", "cargo");
+        let mock = MockLlmClient {
+            response: "suggestion".to_string(),
+        };
+        let mut seen = HashSet::new();
+        let outcome = handle_event(event, &mut store, &mock, &mut seen, None)
+            .await
+            .expect("handle_event");
+        assert_eq!(outcome, SubscriberOutcome::Generated);
+    }
+
+    #[tokio::test]
+    async fn test_notify_below_rate_threshold_does_not_crash() {
+        // ORGANISM_NOTIFY=1, occurrences=3, but accept_rate=0.5 < 0.7 → no notify.
+        std::env::set_var("ORGANISM_NOTIFY", "1");
+
+        let tmp = TempDir::new().expect("tempdir");
+        let mut store = KnowledgeStore::open(tmp.path()).expect("store");
+
+        let err = make_error("notify_hash_3", "cargo", 3);
+        store.put_error(&err).expect("put error");
+
+        // Store a profile with low accept rate for "cargo"
+        use organism_knowledge::{StyleProfile, ToolStats};
+        let mut profile = StyleProfile::empty();
+        profile.by_tool.insert(
+            "cargo".to_string(),
+            ToolStats {
+                accepts: 1,
+                rejects: 1,
+            },
+        ); // 50% rate
+        store.put_style_profile(&profile).expect("put profile");
+
+        let event = make_event("notify_hash_3", "cargo");
+        let mock = MockLlmClient {
+            response: "suggestion".to_string(),
+        };
+        let mut seen = HashSet::new();
+        let outcome = handle_event(event, &mut store, &mock, &mut seen, None)
+            .await
+            .expect("handle_event");
+        assert_eq!(outcome, SubscriberOutcome::Generated);
+    }
+
+    #[tokio::test]
+    async fn test_notify_threshold_met_completes_without_crash() {
+        // ORGANISM_NOTIFY=1, occurrences=3, accept_rate=0.75 ≥ 0.7 → notify fires.
+        // On CI, binary may not exist → Ok(()) swallowed. Assert Generated returned.
+        std::env::set_var("ORGANISM_NOTIFY", "1");
+
+        let tmp = TempDir::new().expect("tempdir");
+        let mut store = KnowledgeStore::open(tmp.path()).expect("store");
+
+        let err = make_error("notify_hash_4", "cargo", 3);
+        store.put_error(&err).expect("put error");
+
+        use organism_knowledge::{StyleProfile, ToolStats};
+        let mut profile = StyleProfile::empty();
+        profile.by_tool.insert(
+            "cargo".to_string(),
+            ToolStats {
+                accepts: 3,
+                rejects: 1,
+            },
+        ); // 75% rate
+        store.put_style_profile(&profile).expect("put profile");
+
+        let event = make_event("notify_hash_4", "cargo");
+        let mock = MockLlmClient {
+            response: "suggestion".to_string(),
+        };
+        let mut seen = HashSet::new();
+        let outcome = handle_event(event, &mut store, &mock, &mut seen, None)
+            .await
+            .expect("handle_event");
+        // Notify fires (or binary not found → warn). Either way: Generated returned.
+        assert_eq!(outcome, SubscriberOutcome::Generated);
     }
 }
