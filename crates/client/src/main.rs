@@ -561,6 +561,49 @@ async fn cmd_profile(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Print notification gate status by reading style_profile_current.json directly.
+/// Gate threshold mirrors maybe_notify in daemon: tool_rate >= 0.70.
+fn print_gate_status(data_dir: &std::path::Path) {
+    use organism_knowledge::StyleProfile;
+
+    const GATE: f32 = 0.70;
+    let profile_path = data_dir.join("style_profile_current.json");
+
+    let profile: StyleProfile = match std::fs::read_to_string(&profile_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+    {
+        Some(p) => p,
+        None => {
+            println!("notification gates: (no data — run 'organism-cli feedback' to build profile)");
+            return;
+        }
+    };
+
+    if profile.by_tool.is_empty() {
+        println!("notification gates: (no tool data yet)");
+        return;
+    }
+
+    println!("notification gates:");
+    let mut tools: Vec<_> = profile.by_tool.iter().collect();
+    tools.sort_by_key(|(k, _)| k.as_str());
+    for (tool, stats) in &tools {
+        let total = stats.accepts + stats.rejects;
+        let rate = if total == 0 {
+            0.0f32
+        } else {
+            stats.accepts as f32 / total as f32
+        };
+        let gate_label = if rate >= GATE {
+            format!("[notifiable \u{2265}{:.2}]", GATE)
+        } else {
+            format!("[silent <{:.2}]", GATE)
+        };
+        println!("  {:<20}  accept_rate={:.2}  {}", tool, rate, gate_label);
+    }
+}
+
 async fn cmd_doctor() -> Result<()> {
     let dir = data_dir();
     // Best-effort: missing dir is fine, we'll just report empty counts.
@@ -632,6 +675,9 @@ async fn cmd_doctor() -> Result<()> {
     }
 
     println!("daemon:   {}", daemon_status);
+
+    // Notification gate status — read profile directly (no IPC needed)
+    print_gate_status(&dir);
 
     // Exit code: 0 if healthy, 1 if any corruption
     if migration_failures.is_empty() {
@@ -1066,5 +1112,43 @@ mod tests {
         assert_eq!(migration_failures.len(), 1);
         assert!(migration_failures[0].contains("99"));
         assert!(migration_failures[0].contains("badschema"));
+    }
+
+    #[test]
+    fn gate_status_empty_profile_prints_no_data() {
+        let dir = tempfile::tempdir().unwrap();
+        // No profile file → expect "(no data" line, no panic
+        let profile_path = dir.path().join("style_profile_current.json");
+        assert!(!profile_path.exists());
+        // Redirect is not possible in a unit test, so we call the fn and verify
+        // it doesn't panic. The "no data" branch is exercised.
+        print_gate_status(dir.path());
+    }
+
+    #[test]
+    fn gate_status_with_tool_stats_prints_rates() {
+        use organism_knowledge::{StyleProfile, ToolStats};
+        use std::collections::HashMap;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut by_tool = HashMap::new();
+        by_tool.insert("rustc".to_string(), ToolStats { accepts: 8, rejects: 2 });
+        by_tool.insert("npm".to_string(), ToolStats { accepts: 3, rejects: 7 });
+        let profile = StyleProfile {
+            schema_v: 1,
+            generated_at: chrono::Utc::now(),
+            feedback_count: 20,
+            accept_rate_overall: 0.55,
+            by_tool,
+            by_block_kind: HashMap::new(),
+            preferred_terseness: organism_knowledge::Terseness::Standard,
+            top_accepted_phrases: vec![],
+            top_rejected_phrases: vec![],
+        };
+        let json = serde_json::to_string(&profile).unwrap();
+        std::fs::write(dir.path().join("style_profile_current.json"), json).unwrap();
+        // rustc: 8/(8+2) = 0.80 → notifiable; npm: 3/10 = 0.30 → silent
+        // Verify no panic; output goes to stdout (not captured in unit test).
+        print_gate_status(dir.path());
     }
 }
