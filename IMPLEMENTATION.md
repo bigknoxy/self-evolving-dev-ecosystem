@@ -1,6 +1,8 @@
-# Developer Superorganism — Implementation Details
+# Organism — Implementation Details
 
-> Detailed engineering appendix for the "Developer Superorganism" daemon project. Covers crate layout, IPC contracts, plugin API, knowledge store schema, LLM integration choices, testing, CI, performance budgets, safety, and deployment.
+> Engineering reference for the organism daemon. Covers crate layout, IPC protocol,
+> knowledge store schema, LLM integration, and testing conventions.
+> Updated through M17.
 
 ---
 
@@ -8,379 +10,273 @@
 
 ```
 self-evolving-dev-ecosystem/
+├── Cargo.toml                  — workspace manifest (shared deps here)
 ├── crates/
-│   ├── protocol/           # IPC types & shared message formats (serde)
-│   ├── knowledge/          # file-backed KV store (no RocksDB; flat JSON under $ORGANISM_HOME)
-│   ├── cortex/             # pattern engine + error classifier
-│   ├── daemon/             # main daemon binary (bin name: `organism`)
-│   │   └── src/
-│   │       ├── main.rs
-│   │       ├── daemon.rs
-│   │       ├── event_bus.rs
-│   │       ├── error_subscriber.rs
-│   │       ├── ipc.rs
-│   │       └── sensors/    # file watcher; terminal events arrive via IPC
-│   └── client/             # `organism-cli` binary
-├── scripts/                # install.sh, uninstall.sh, zsh hook, LaunchAgent plist
-├── tests/                  # workspace-wide integration tests
-└── Cargo.toml              # workspace manifest
+│   ├── protocol/               — event/envelope types, IPC message schema (serde)
+│   ├── knowledge/              — file-backed KV store (flat JSON under $ORGANISM_HOME)
+│   ├── cortex/                 — error classifier + style profile builder
+│   ├── daemon/                 — bin `organism` (event bus, IPC, sensors, subscribers)
+│   │   ├── src/
+│   │   │   ├── main.rs
+│   │   │   ├── event_bus.rs
+│   │   │   ├── ipc.rs         — Unix socket RPC handler
+│   │   │   ├── metrics.rs     — SharedMetrics snapshot persistence
+│   │   │   ├── ollama_subscriber.rs
+│   │   │   └── sensors/       — file watcher; terminal events arrive via IPC
+│   │   └── tests/
+│   │       ├── profile_refresh_test.rs
+│   │       └── ollama_integration_test.rs
+│   └── client/                 — bin `organism-cli`
+│       └── src/
+│           ├── main.rs
+│           └── cmd_stats.rs
+├── scripts/                    — install.sh, uninstall.sh, quick-install.sh, zsh hook
+└── tests/                      — workspace integration tests
 ```
 
-Plugins (`react_plugin`, `python_plugin`) and effectors are L3+ scope — not present today.
-
-Language: Rust 1.70+ (stable). Use tokio async runtime, serde for structured messages, anyhow/thiserror for errors, tracing/tracing-subscriber for logging.
+Build order: `protocol` → `knowledge` → `cortex` → `daemon` (and `client`).
+`daemon` and `client` are binaries; `protocol`, `knowledge`, `cortex` are libraries.
 
 ---
 
-## 2. Core Concepts & Contracts
+## 2. IPC Protocol
 
-- Event: a typed struct describing an observation (TerminalInput, FileChange, GitEvent, ProcessSpawn, NetworkCall)
-- Thought: an internal inference produced by Cortex from events (e.g., "likely working on React auth feature")
-- Action: a change the daemon can perform (AutoFixPatch, SetEnvVar, RunCommand, FormatFile)
-- KnowledgeNode: persistent record in RocksDB capturing patterns, learned style, fixes
+**Transport:** Unix domain socket at `$ORGANISM_HOME/daemon.sock`
+(default `~/.organism/daemon.sock`). One request per connection; connection
+closes after response. No keep-alive, no auth tokens, no TCP fallback.
 
-All messages defined in `protocol` crate and serialized with JSON over Unix socket (or named pipe on Windows). Use a versioned envelope:
-
+**Envelope format (newline-delimited JSON):**
 ```json
-{
-  "v": 1,
-  "type": "Event|Thought|Action|Ack|Error",
-  "id": "uuid4",
-  "ts": "2026-04-26T...Z",
-  "payload": { ... }
+{ "id": "uuid4", "method": "status", "payload": {} }
+```
+
+Response:
+```json
+{ "id": "uuid4", "ok": true, "payload": { ... } }
+```
+
+Error response:
+```json
+{ "id": "uuid4", "ok": false, "payload": { "error": "reason" } }
+```
+
+**Supported methods (as of M17):**
+
+| Method | Request payload | Response payload |
+|--------|----------------|-----------------|
+| `status` | `{}` | `{ "awake": bool, "uptime_s": u64, "pid": u32 }` |
+| `emit-terminal` | `TerminalEvent` fields | `{ "ok": true }` |
+| `log` | `{ "limit": u32 }` | `{ "events": [...] }` |
+| `sleep` | `{}` | `{ "ok": true }` |
+| `wake` | `{}` | `{ "ok": true }` |
+| `errors` | `{ "limit": u32 }` | `{ "errors": [...] }` |
+| `suggest` | `{ "error_key": str, "force": bool }` | `{ "text": str, "cached": bool }` |
+| `apply` | `{ "error_key": str, "mode": "dry"|"stage" }` | apply result fields |
+| `feedback` | `{ "error_key": str, "verdict": str, "note": str? }` | `{ "ok": true }` |
+| `style` | `{}` | `StyleProfile` JSON |
+| `profile` | `{ "params": ProfileRequest }` | `StyleProfile` JSON |
+| `metrics` | `{}` | `Metrics` JSON |
+| `doctor` | `{}` | `{ "daemon": str, "socket": str }` |
+
+Verdict strings for `feedback`: `"accept"`, `"reject"`, `"ignore"`, `"applied"`.
+
+---
+
+## 3. Knowledge Store Schema
+
+**Backend:** flat JSON files under `$ORGANISM_HOME/knowledge/` (default `~/.organism/knowledge/`).
+No native deps, no RocksDB, no SQLite. Each record is one file.
+
+**Key → filename mapping:** `:` replaced with `_`.
+
+| Key prefix | Filename pattern | Type |
+|-----------|-----------------|------|
+| `error:<hash>` | `error_<hash>.json` | `ErrorRecord` |
+| `suggestion:<hash>` | `suggestion_<hash>.json` | `SuggestionRecord` |
+| `accepted:<hash>` | `accepted_<hash>.json` | `AcceptedSuggestion` |
+| `feedback:<hash>` | `feedback_<hash>.json` | `FeedbackRecord` |
+| `pattern:<hash>` | `pattern_<hash>.json` | `PatternRecord` |
+| `style_profile:current` | `style_profile_current.json` | `StyleProfile` |
+| `fix:<hash>` | `fix_<hash>.json` | `FixRecord` |
+
+All types live in `crates/knowledge/src/types.rs`. All have `schema_v: u32`
+(default 1) and `#[serde(default = "default_schema_v")]` for backward compat.
+
+**Key types:**
+
+```rust
+// ErrorRecord — one per unique error signature
+pub struct ErrorRecord {
+    pub tool: String,       // "rustc", "npm", "python", etc.
+    pub kind: String,       // "E0599", "MODULE_NOT_FOUND", etc.
+    pub hash: String,       // sha256 hex of normalized error text
+    pub raw_excerpt: String,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+    pub occurrences: u64,
+    pub last_command: String,
+    pub schema_v: u32,
+}
+
+// FeedbackRecord — user verdict on a suggestion
+pub struct FeedbackRecord {
+    pub error_hash: String,
+    pub suggestion_hash: String,
+    pub verdict: Verdict,   // Accepted | Rejected | Ignored | Applied
+    pub note: Option<String>,
+    pub ts: DateTime<Utc>,
+    pub schema_v: u32,
+}
+
+// AcceptedSuggestion — immutable snapshot of text at acceptance time
+// Separate from suggestion_<hash>.json (which can be regenerated)
+pub struct AcceptedSuggestion {
+    pub suggestion_hash: String,
+    pub error_hash: String,
+    pub text: String,
+    pub ts: DateTime<Utc>,
+    pub schema_v: u32,
+}
+
+// StyleProfile — built from feedback history by cortex::build_profile
+pub struct StyleProfile {
+    pub feedback_count: u32,
+    pub accept_rate_overall: f32,
+    pub by_tool: HashMap<String, ToolStats>,
+    pub by_block_kind: HashMap<String, BlockStats>,  // "patch"|"shell"|"note"
+    pub preferred_terseness: Terseness,              // Concise|Standard|Verbose
+    pub top_accepted_phrases: Vec<String>,
+    pub top_rejected_phrases: Vec<String>,
+    pub generated_at: DateTime<Utc>,
+    pub schema_v: u32,
 }
 ```
 
----
-
-## 3. IPC & Client Protocol
-
-Transport choices:
-- Local Unix domain sockets (preferred on macOS / Linux) at `$ORGANISM_HOME/daemon.sock` (default `~/.organism/daemon.sock`)
-- Fallback: TCP loopback on `127.0.0.1:8765` restricted to localhost
-
-Protocol characteristics:
-- JSON envelope (versioned) for forward/backward compatibility
-- Message types: Request/Response for RPC style; Events for pub/sub
-- Keep-alive heartbeat messages every 30s
-- Authentication: file-based token stored at `~/.organism/token` (random 256-bit key). Clients must present token for privileged RPCs (actions, undo)
-
-Example request (client → daemon):
-```json
-{ "v":1, "type":"Request", "id":"...", "method":"status.get", "params":{} }
-```
-
-Example response:
-```json
-{ "v":1, "type":"Response", "id":"...", "result": {"status":"ok","uptime_s":1234} }
-```
-
-Streaming: subscribe to events via `events.subscribe` and receive Event envelopes pushed by daemon.
+**Verdict serde:** PascalCase on disk (`"Accepted"`, `"Rejected"`, `"Ignored"`, `"Applied"`).
+IPC wire format uses lowercase (`"accept"`, `"reject"`, `"ignore"`, `"applied"`) mapped
+in `ipc.rs`. Do NOT add `rename_all = "snake_case"` to `Verdict` — breaks existing on-disk data.
 
 ---
 
-## 4. Event Schema (protocol crate)
+## 4. Error Classification (cortex crate)
 
-Key event payloads (Rust structs serialized with serde):
+`crates/cortex/src/classify.rs` — regex-based, no ML:
 
-- TerminalEvent
-  - ts, pid, cwd, command_line, stdout_snippet, stderr_snippet, keystroke_rate
-- FileEvent
-  - ts, path, event_type (create/modify/delete), size_bytes, owner_uid
-- GitEvent
-  - ts, repo_path, branch, head_sha, commit_msg, author
-- ProcessEvent
-  - ts, pid, cmd, exit_code, cpu_ms, mem_kb
-- ClipboardEvent
-  - ts, content_type, content_snippet
+1. Match `stderr_snippet` against per-tool regex banks (rustc, npm, python, shell, go, etc.)
+2. Extract `(tool, kind)` pair
+3. Hash normalized error text → `hash` (sha256 hex)
+4. Key: `error:<hash>` — stored as `ErrorRecord`; duplicate hashes bump `occurrences`
 
-All events carry `context` map with optional keys: project_id, detected_stack, last_error_signature
+PII redaction (`crates/cortex/src/redact.rs`):
+- Strips emails, 40-char+ hex tokens, UUIDs, remote URLs before storing
+- Applied to `raw_excerpt` before classification
 
 ---
 
-## 5. Knowledge Store (RocksDB) Schema
+## 5. Style Profile (cortex crate)
 
-Design: use prefixed keys for separation. Keys are binary: prefix:u8 + subkey
+`crates/cortex/src/style.rs` — `build_profile(feedback, accepted_text, tool_for_hash, block_kind_for_suggestion)`:
 
-Prefixes:
-- 0x01: project:meta:<project_id> -> JSON value
-- 0x02: fix_db:signature:<hash> -> FixRecord JSON
-- 0x03: style:profile:<user_id> -> StyleProfile JSON
-- 0x04: patterns:<pattern_id> -> Pattern JSON
-- 0x05: stats:metric:<metric_name> -> Timeseries (protobuf or JSON array)
+- **accept_rate_overall**: weighted; `Applied` counts 2× in both numerator and denominator
+  so rate stays in [0, 1]
+- **by_tool**: `ToolStats { accepts, rejects }` per tool name from ErrorRecord
+- **by_block_kind**: `BlockStats` per `"patch"|"shell"|"note"` (classified from accepted text)
+- **preferred_terseness**: from avg line count of accepted suggestions (<8 → Concise, ≤20 → Standard, >20 → Verbose)
+- **top_accepted_phrases**: top-10 2-gram + 3-gram phrases from accepted suggestion text, after stopword filtering
+- Rebuilt after every N feedback events (ORGANISM_PROFILE_REFRESH_EVERY, default 10), rate-limited (ORGANISM_PROFILE_REFRESH_MIN_INTERVAL_MS, default 60s)
 
-Example FixRecord:
-```json
-{
-  "id":"uuid4",
-  "signature_hash":"sha256 of error snippet",
-  "patch":"diff unified or patch file",
-  "confidence":0.92,
-  "applied_count":3,
-  "last_applied":"2026-04-20T...Z",
-  "source": "learned|manual|imported"
+**Block kind classification** (`classify_block_kind`):
+- `` ```diff `` / `` ```patch `` or starts with `--- ` → `"patch"`
+- `` ```shell `` / `` ```bash `` / `` ```sh `` or starts with `$ ` → `"shell"`
+- everything else → `"note"`
+
+---
+
+## 6. Ollama Integration (daemon crate)
+
+`crates/daemon/src/ollama_subscriber.rs`:
+
+- Spawns tokio task that subscribes to EventBus
+- On new `ErrorRecord` write, calls `organism-ollama` client (POST `/api/generate`)
+- Persists response as `suggestion_<error_hash>.json`
+- Calls `maybe_notify()` to fire a desktop notification if:
+  - Tool's accept rate in StyleProfile ≥ 0.70 (notification gate)
+  - Error hash not already notified this session (per-session HashSet dedup)
+- Gated by `OLLAMA_ENABLED=1` env var (default: disabled)
+- Best-effort: logs warn on Ollama errors, never crashes daemon
+
+**Ollama crate** (`crates/ollama/`):
+- `OllamaClient { base_url, model, http: reqwest::Client }`
+- `async fn generate(&self, prompt: &str) -> Result<String>`
+- POST `{base_url}/api/generate` with `{ "model": ..., "prompt": ..., "stream": false }`
+- Defaults: `OLLAMA_BASE_URL=http://127.0.0.1:11434`, `OLLAMA_MODEL=qwen2.5-coder:7b`
+- Prompt template (M11 few-shot): includes StyleProfile header + kNN-selected accepted examples
+
+---
+
+## 7. Apply Workflow
+
+`ipc.rs` `"apply"` handler:
+
+1. Load `ErrorRecord` for `error_key`
+2. Load `suggestion_<error_hash>.json` (cached LLM output)
+3. Parse suggestion text into blocks: patch blocks, shell blocks, note blocks (M7 multi-block)
+4. Build apply plan: `{ plan_kind: "patch"|"shell"|"note", ... }`
+5. If `mode = "stage"`:
+   - patch: write unified diff to `/tmp/organism_patch_<hash>.patch`
+   - shell: copy to clipboard via `pbcopy` (macOS) or `xclip`/`xsel` (Linux)
+   - note: print only
+6. Return plan details to CLI
+
+CLI (`cmd_apply` in `main.rs`):
+- After staging, if `plan_kind != "note"` AND `stdin.is_terminal()`:
+  - Prints `"Did you apply this patch? [y/N]: "`
+  - If `y` → sends `feedback` IPC request with `verdict: "applied"`
+  - Daemon records `Verdict::Applied` (2× weight in profile)
+
+---
+
+## 8. Metrics
+
+`crates/protocol/src/metrics.rs`:
+
+```rust
+pub struct Metrics {
+    pub suggestions_total: u64,
+    pub suggestions_cached: u64,
+    pub feedback_accept: u64,
+    pub feedback_reject: u64,
+    pub feedback_applied: u64,   // Verdict::Applied (serde default=0 for backward compat)
+    pub by_tool: HashMap<String, ToolMetrics>,
+    pub since: DateTime<Utc>,
+    pub prompt_version: String,
 }
 ```
 
-RocksDB options:
-- Use RocksDB column families to separate large namespaces
-- Enable LZ4 compression and block cache
-- Periodic compaction scheduled at idle times
-
-Backup & encryption:
-- Optionally encrypt DB with user key derived from SSH agent or passphrase using per-value AES-GCM wrapping keys (managed by knowledge crate)
+Persisted as `metrics_snapshot.json` in `$ORGANISM_HOME`. `cmd_stats --capture-baseline`
+copies snapshot to `metrics_baseline.json` for delta tracking.
 
 ---
 
-## 6. Plugin System (ABI & Security)
+## 9. Testing Conventions
 
-Plugin types: dynamic libraries loaded at runtime or sandboxed subprocesses.
+- `#[cfg(test)] mod tests { ... }` at end of each `src/*.rs`
+- Integration tests in `crates/<crate>/tests/*.rs`
+- `tempfile::TempDir` for all filesystem tests (never `~/.organism/`)
+- `#[tokio::test]` for async tests, `#[test]` for sync
+- `#[serial]` (from `serial_test` crate) on tests that use global state (e.g. `REFRESH_STATE`)
+- wiremock for Ollama HTTP tests
 
-Preferred design: Initially implement sandboxed subprocess plugins (separate process) communicating over stdin/stdout JSON RPC; later add dynamic .dylib loading with C ABI.
-
-Plugin API (JSON RPC over stdio) — minimal interface:
-- `handshake`: plugin -> daemon supplies metadata (name, version, capabilities)
-- `on_event(event) -> responses[]` : plugin receives events and can emit zero or more responses (thoughts, actions, logs)
-- `on_command(command) -> result` : invoked when user triggers plugin command
-
-Security:
-- Plugins run with restricted privileges by default (no network). If plugin needs network, user must approve and sign plugin.
-- Signed plugin model: user can only install plugins from `~/.organism/plugins/` and must approve unknown plugin fingerprints.
-
-Example handshake response:
-```json
-{"name":"react_plugin","version":"0.1","capabilities":["lint","component_suggest"]}
-```
+Clippy: `cargo clippy --workspace -- -D warnings` must pass. No `#[allow(...)]`
+without justification comment.
 
 ---
 
-## 7. Cortex / Pattern Engine
+## 10. CI (`.github/workflows/ci.yml`)
 
-Responsibilities:
-- Aggregate events into sessions by project_id and time window
-- Extract features: commit frequency, naming patterns, code token distributions, error signatures
-- Detect recurring sequences (pattern mining) using lightweight algorithms:
-  - Frequent sequence mining (PrefixSpan) on recent n-grams of actions
-  - TF-IDF on tokenized identifiers to build a "vocabulary" of user naming conventions
-- Output: Pattern objects with frequency and example occurrences, persisted in knowledge store
-
-Model lifecycle:
-- Models are small, deterministic, tuned for on-device inference, stored as JSON; retraining occurs in background when new data reaches thresholds (e.g., 1k events)
-
-Confidence calculation: use bootstrapped statistics to estimate real effect sizes. E.g., experiment improvement / noise_floor.
+Jobs: `build-and-test` (ubuntu + macos matrix), `clippy`, `fmt`.
+All run `--locked`. `fmt` job runs `cargo fmt --all -- --check`.
 
 ---
 
-## 8. Codec Engine (Digital Twin)
-
-Phases:
-- V0: LLM-driven code generation via local Ollama model with constrained prompts and retrieval augmentation (local README + commit msgs + style profile)
-- V1: Style-conditional generation (prepend style profile to prompt)
-- V2: Patch generation and verification: generate patch -> apply in temp branch -> run tests/lint -> if passes, propose/apply
-
-Prompting rules:
-- Deterministic (temperature 0.0) for core scaffolding unless user enables creative mode
-- Provide examples of user's previous code (up to N files) as context
-- Include explicit constraints: target file, API shape, test expectations
-
-Safety:
-- Generated code must pass local linter and basic test harness before being auto-applied under `assist` trust-level
-- Under `ask` trust-level, generate patch and present diff for confirmation
-
----
-
-## 9. Actions & Undo Model
-
-All actions performed by daemon are logged to `~/.organism/actions.log` JSONL with fields:
-- action_id, ts, actor (daemon/plugin), type, payload, backup_path (if destructive), verification_result
-
-Undo semantics:
-- For file edits: store pre-image in `~/.organism/backups/<action_id>.tar.gz` and allow restore
-- For env changes: store previous env and shell profiles, restore on undo
-- For command runs with side effects (e.g., package install): provide best-effort rollback (e.g., uninstall), but mark as non-reversible and require explicit user consent
-
-CLI: `organism undo --id <action_id>` or `organism undo --latest 1`
-
----
-
-## 10. Safety Levels & Configuration
-
-Trust levels (configurable per-host and per-project):
-- `observer` — observe-only, no suggestions
-- `ask` (default) — suggest and require acceptance
-- `assist` — auto-apply low-risk fixes (formatting, lint autofixes)
-- `autonomous` — perform any action within confidence thresholds
-- `uncaged` — full autonomy (dangerous)
-
-Config file `~/.organism/config.toml` contains keys:
-- sensors: list of sensors to enable
-- trusted_plugins: fingerprints
-- trust_level: ask
-- max_concurrent_plugins: 4
-- llm: { backend: 'ollama', model: 'vicuna-13b', allow_remote: false }
-
-Kill switch:
-- `organism sleep` writes a lock file and stops sensors quickly
-- `organism emergency-stop` kills the daemon immediately
-
----
-
-## 11. Testing Strategy
-
-Unit tests (per crate) using `cargo test`.
-- `daemon` crate: mock sensors with deterministic event feeds
-- `protocol` crate: serialization roundtrip tests
-- `cortex` crate: pattern detection tests with synthetic data
-- `knowledge` crate: RocksDB in-tempdir tests, migration tests
-
-Integration tests (workspace-level):
-- `tests/integration/test_end_to_end.rs` spawn daemon in tempdir, connect client, send events and assert actions emitted
-- `tests/integration/test_plugin_handshake.rs` spawn plugin subprocess and validate handshake
-
-Fuzzing & property tests:
-- Use `proptest` for RPC boundary checks (malformed messages)
-- Use `cargo-fuzz` for compact critical sections (parsers)
-
-Performance & Load tests:
-- `tests/load/test_event_throughput.rs` measure sustained events/sec (target 2k events/s on dev machine)
-
-CI: run tests on GitHub Actions with matrix for stable Rust versions.
-
----
-
-## 12. CI/CD (`.github/workflows/ci.yml`)
-
-```yaml
-name: Superorganism CI
-on: [push, pull_request]
-jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust: [1.70.0]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@v1
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: Cargo build
-        run: cargo test --workspace --all-features --verbose
-
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-```
-
----
-
-## 13. Observability & Telemetry
-
-Local logs:
-- `~/.organism/logs/daemon.log` (rotating)
-- `~/.organism/actions.log` (JSONL audit trail)
-
-Metrics:
-- Expose Prometheus metrics on a unix-socket file (textfile) or local TCP port when enabled: events_received, actions_executed, avg_processing_ms, plugin_count
-
-Optional telemetry (opt-in):
-- Hash of machine id, counts of events, error rates — explicit opt-in in config and separate `--telemetry enable` command
-
----
-
-## 14. LLM Integration Details
-
-Primary local-first approach: Ollama or llama.cpp backends. Provide an abstraction layer so the backend can be swapped.
-
-Requirements:
-- Offline capability with local models
-- Prompt templates stored in `~/.organism/prompts/` and versioned
-- Retrieval augmentation: fetch relevant files (README, tests, last 10 commits) and attach to prompt
-- Rate limiting & batching: do not send long prompts at high frequency
-
-Security: never send private repo content to remote LLMs unless `allow_remote=true` in config
-
----
-
-## 15. Packaging, Installation & Upgrades
-
-Install options:
-- Cargo install for developers: `cargo install --path daemon/ --bin organism-cli`
-- Prebuilt releases (macOS/Linux): provide tar.gz with binary and `organism-install` script
-
-Install script actions:
-- Create `~/.organism/` directories with proper permissions
-- Generate `~/.organism/token` and instruct user to add it to `$XDG_RUNTIME_DIR` for clients
-- Optionally add shell hooks (`.zshrc`/`.bashrc`) to enable `preexec`/`postcmd` integration
-
-Auto-updates:
-- Self-update via GH Releases (download new release and replace binary) with signature verification
-
----
-
-## 16. Performance Budgets
-
-| Operation | Target |
-|-----------|--------|
-| Daemon steady memory | < 150 MB |
-| Event processing latency (p50) | < 20 ms |
-| Event processing latency (p95) | < 150 ms |
-| Plugin handshake time | < 200 ms |
-| Style profile computation (background) | < 2s per 1000 files |
-
-Profiling tools: `perf`, `tokio-console`, and flamegraphs.
-
----
-
-## 17. Security & Privacy Considerations
-
-- Local-only defaults
-- All persisted data encrypted at rest if user enables `encrypt_db=true` via key derived from passphrase
-- Plugin approval workflow for third-party plugins
-- Audit trail: every action has an auditable JSONL entry stored locally
-- Sensitive content redaction: by default do not store clipboard or file content longer than 1KB — store hashed signatures instead
-
----
-
-## 18. Migration & Backups
-
-- Knowledge DB version recorded in `~/.organism/schema_version`
-- `organism backup --dest /path/to/backup.tar.gz` creates encrypted backup of DB + actions log
-- `organism restore --src /path/to/backup.tar.gz` restores state (interactive)
-
----
-
-## 19. UX Onboarding & Commands
-
-- `organism install` — run once, sets up repo, token, shell hooks (opt-in)
-- `organism start` — start daemon (or systemctl/launchd service)
-- `organism status` — prints health and active sensors
-- `organism sleep` / `organism wake` — pause/resume
-- `organism suggest --one` — request a suggestion for current cwd
-- `organism apply --id <suggestion-id>` — apply suggested patch (requires proper trust level)
-- `organism plugin install <path-or-url>` — installs plugin with fingerprint check
-
----
-
-## 20. Implementation Roadmap (Immediate Tasks)
-1. Implement `protocol` crate with versioned message types and JSON serialization tests.
-2. Build `daemon` skeleton: event bus, simple terminal sensor (reads a synthetic event file) and client RPC for status.
-3. Implement `knowledge` crate with RocksDB basic CRUD and migrations.
-4. Implement plugin subprocess API and a sample `react_plugin` as proof-of-concept.
-5. Integrate local Ollama client wrapper and a safe prompt execution pipeline.
-6. Add thorough unit + integration tests and set up CI.
-
----
-
-End of Developer Superorganism Implementation Details
+*Updated through M17 (2026-05-15). For per-task notes and gotchas, see `LEARNINGS.md`.*

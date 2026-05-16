@@ -1,4 +1,4 @@
-**Status:** L0–L2 complete (TASK-001..010 + L1 + L2 waves). See README.md for level matrix.
+**Status:** M17 complete (L0–L2 done + L3 Ollama + L3.5 apply + M6–M17 feedback/style/metrics). See README.md for full milestone matrix.
 
 # Self-Evolving Dev Ecosystem (Superorganism) — Atomic Task List
 

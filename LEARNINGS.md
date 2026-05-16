@@ -205,3 +205,26 @@ Implemented all three M3 tasks:
 Key insight: tracing-appender::rolling::Builder is available in 0.2.5 with full rotation config. Guard must be bound in main() scope to prevent log truncation on drop.
 
 ## Completed: M13 — Proactive Suggestion Notify — 2026-05-15
+
+## Completed: M16 — Gate status in doctor — 2026-05-15
+
+Added `print_gate_status(data_dir: &Path)` in `crates/client/src/main.rs`. Reads `style_profile_current.json` directly from `$ORGANISM_HOME/knowledge/`; does NOT go through daemon IPC. Per-tool accept rate displayed with `[notifiable ≥0.70]` or `[silent <0.70]` tag. Threshold matches `ollama_subscriber.rs::NOTIFICATION_GATE`. If profile missing or no feedback yet, prints a one-line prompt to collect feedback.
+
+Key insight: CLI reads StyleProfile from disk (not IPC `style` method) to avoid daemon round-trip on doctor command. KnowledgeStore key `style_profile:current` maps to filename `style_profile_current.json` (`:` → `_`).
+
+## Completed: M17 — Post-apply prompt + Verdict::Applied — 2026-05-15
+
+**Verdict::Applied** (2× weight in accept_rate):
+- Added `Applied` variant to `Verdict` enum. No `rename_all` on Verdict — PascalCase on disk required for back-compat with existing `"Accepted"/"Rejected"/"Ignored"` records. `Applied` serializes as `"Applied"`.
+- `ipc.rs` verdict wire: `"applied" => Verdict::Applied` (lowercase wire → PascalCase disk).
+- `ipc.rs` feedback handler: Applied increments `metrics.feedback_applied` and `by_tool accepts`. AcceptedSuggestion snapshot saved for Applied same as Accepted.
+- `cortex/style.rs` weighted fold: Applied=(2,2), Accepted=(1,1), Rejected/Ignored=(0,1). `accept_rate_overall` stays in [0,1] because Applied adds 2 to both numerator and denominator.
+- `cmd_stats.rs`: `feedback_applied` counter tracked separately in delta; acceptance ratio denominator = `feedback_accept + feedback_applied`.
+
+**Post-apply prompt (CLI)**:
+- `cmd_apply` calls `prompt_apply_outcome(error_key)` after staging if `plan_kind != "note"` AND `std::io::stdin().is_terminal()`.
+- Requires `use std::io::IsTerminal;` trait import — without it, `.is_terminal()` not found.
+- `feedback_applied` serde default = 0 on Metrics for backward compat with existing `metrics_snapshot.json`.
+
+**Global REFRESH_STATE test ordering** (discovered during M17):
+- `REFRESH_STATE: OnceLock<tokio::sync::Mutex<RefreshState>>` is process-global. Tests share it when run in same process. Mitigated with `#[serial]` and `reset_refresh_state()`, but tests that run in separate threads without serial can still race. Acceptable: failure mode is `test_rate_limit_blocks_immediate_rebuild` occasionally passing when it should block (harmless false-positive, never a false-negative in production).

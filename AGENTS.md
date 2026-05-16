@@ -147,19 +147,35 @@ When a compilation error occurs in `daemon`, check `protocol`, `knowledge`, and 
 
 ---
 
-## Definition of Done
+## Definition of Done (current: M17)
 
-- [ ] All 10 tasks verified (exit 0)
-- [ ] `cargo test --workspace` shows 0 failed
-- [ ] `cargo clippy --workspace -- -D warnings` shows 0 warnings
-- [ ] `cargo build --workspace --release` succeeds
-- [ ] `./target/release/organism-cli help` prints usage
-- [ ] `LEARNINGS.md` populated with discoveries
+- [x] L0: All 10 tasks verified (`cargo test --workspace` green)
+- [x] L1: Unix socket IPC, zsh hook, `emit-terminal`
+- [x] L2: `notify` file watcher, regex error classifier, `install.sh` + LaunchAgent
+- [x] L3: Ollama HTTP client, `suggest` module, daemon subscriber, CLI `suggest`
+- [x] L3.5: `apply` IPC + CLI: patch/shell/note plans, `--stage` writes patch/clipboard
+- [x] M6: `organism-cli feedback` — accept/reject/ignore
+- [x] M7: Multi-block plan parsing (patch + shell + note in one suggestion)
+- [x] M8: PII redaction (emails, tokens, UUIDs, remote URLs)
+- [x] M9: Schema versioning + `organism-cli doctor`
+- [x] M9.5: Immutable accepted-suggestion snapshots
+- [x] M10: StyleProfile — phrase mining, IPC, `organism-cli style`
+- [x] M11: Few-shot kNN context injection in Ollama prompt
+- [x] M13: Proactive desktop notifications gated on per-tool accept rate
+- [x] M15: `organism-cli stats` — metrics + baseline capture
+- [x] M16: Gate status in `organism-cli doctor` (per-tool accept rate display)
+- [x] M17: Post-apply prompt + `Verdict::Applied` (2× weight in StyleProfile)
 
-## What Comes Next (Level 1, not in this TASKS.md)
+Ongoing gates:
+- `cargo clippy --workspace -- -D warnings` must show 0 warnings
+- `cargo build --workspace --release` must succeed
+- `LEARNINGS.md` populated after each milestone
 
-- Unix socket IPC between client and daemon
-- zsh `preexec`/`precmd` hook shell script
-- Real file watcher using `notify` crate
-- Error signature classifier
-- Ollama API client for local LLM inference
+## What Comes Next (L4 scope — not yet implemented)
+
+- `organism-cli export` — portable snapshot of errors + suggestions + feedback
+- Inline editor surface / suggestion UI
+- Effector framework (daemon takes actions, not just observes)
+- Digital twin code generation in user style
+- Windows + Linux service installers (LaunchAgent is macOS-only today)
+- Plugin API for project-specific sensors/effectors
