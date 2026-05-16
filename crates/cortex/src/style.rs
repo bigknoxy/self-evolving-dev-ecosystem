@@ -63,12 +63,21 @@ pub fn build_profile(
         return StyleProfile::empty();
     }
 
-    let total = feedback.len() as u32;
-    let accepts_count = feedback
-        .iter()
-        .filter(|f| matches!(f.verdict, Verdict::Accepted))
-        .count() as u32;
-    let accept_rate_overall = accepts_count as f32 / total as f32;
+    // Applied counts as 2 in both numerator and denominator so accept_rate stays in [0,1].
+    // A single Applied is worth twice as much as Accepted (stronger positive signal).
+    let (accept_weight, total_weight) = feedback.iter().fold((0u32, 0u32), |(acc, tot), f| {
+        let (a, t) = match f.verdict {
+            Verdict::Applied => (2, 2),
+            Verdict::Accepted => (1, 1),
+            Verdict::Rejected | Verdict::Ignored => (0, 1),
+        };
+        (acc + a, tot + t)
+    });
+    let accept_rate_overall = if total_weight == 0 {
+        0.0f32
+    } else {
+        accept_weight as f32 / total_weight as f32
+    };
 
     let mut by_tool: HashMap<String, ToolStats> = HashMap::new();
     let mut by_block_kind: HashMap<String, BlockStats> = HashMap::new();
@@ -83,7 +92,7 @@ pub fn build_profile(
                 rejects: 0,
             });
             match f.verdict {
-                Verdict::Accepted => stats.accepts += 1,
+                Verdict::Accepted | Verdict::Applied => stats.accepts += 1,
                 Verdict::Rejected => stats.rejects += 1,
                 Verdict::Ignored => {}
             }
@@ -96,14 +105,14 @@ pub fn build_profile(
                 rejects: 0,
             });
             match f.verdict {
-                Verdict::Accepted => stats.accepts += 1,
+                Verdict::Accepted | Verdict::Applied => stats.accepts += 1,
                 Verdict::Rejected => stats.rejects += 1,
                 Verdict::Ignored => {}
             }
         }
 
-        // Phrase mining for accepted feedback
-        if matches!(f.verdict, Verdict::Accepted) {
+        // Phrase mining for accepted + applied feedback
+        if matches!(f.verdict, Verdict::Accepted | Verdict::Applied) {
             if let Some(text) = accepted_text.get(&f.suggestion_hash) {
                 // Count line count
                 let line_count = text.lines().count().max(1);
@@ -156,7 +165,7 @@ pub fn build_profile(
     StyleProfile {
         schema_v: 1,
         generated_at: Utc::now(),
-        feedback_count: total,
+        feedback_count: feedback.len() as u32,
         accept_rate_overall,
         by_tool,
         by_block_kind,
@@ -370,5 +379,30 @@ mod tests {
     fn classify_block_kind_diff_prefix() {
         assert_eq!(classify_block_kind("--- a/file.rs"), "patch");
         assert_eq!(classify_block_kind("   --- a/file.rs"), "patch");
+    }
+
+    #[test]
+    fn build_profile_applied_weight_stays_in_bounds() {
+        // 5 Applied + 5 Accepted: accept_weight=10+5=15, total_weight=10+5=15 → rate=1.0
+        let mut feedback: Vec<FeedbackRecord> = (0..5)
+            .map(|i| fb(Verdict::Applied, &format!("a{}", i), "s1"))
+            .collect();
+        feedback.extend((0..5).map(|i| fb(Verdict::Accepted, &format!("b{}", i), "s2")));
+
+        let profile = build_profile(&feedback, &HashMap::new(), &HashMap::new(), &HashMap::new());
+        assert!((profile.accept_rate_overall - 1.0).abs() < 1e-6, "rate={}", profile.accept_rate_overall);
+        assert!(profile.accept_rate_overall <= 1.0, "rate must not exceed 1.0");
+    }
+
+    #[test]
+    fn build_profile_applied_outweighs_rejected() {
+        // 1 Applied (weight=2) vs 1 Rejected (weight=1): rate = 2/3 ≈ 0.667
+        let feedback = vec![
+            fb(Verdict::Applied, "a1", "s1"),
+            fb(Verdict::Rejected, "a2", "s2"),
+        ];
+        let profile = build_profile(&feedback, &HashMap::new(), &HashMap::new(), &HashMap::new());
+        let expected = 2.0f32 / 3.0;
+        assert!((profile.accept_rate_overall - expected).abs() < 1e-5, "rate={}", profile.accept_rate_overall);
     }
 }

@@ -136,6 +136,8 @@ pub enum Verdict {
     Accepted,
     Rejected,
     Ignored,
+    /// User applied the patch to their codebase (stronger positive signal than Accepted).
+    Applied,
 }
 
 /// A record of user feedback on a suggestion
@@ -410,5 +412,24 @@ mod tests {
         }"#;
         let p: StyleProfile = serde_json::from_str(json).unwrap();
         assert_eq!(p.schema_v, 1);
+    }
+
+    #[test]
+    fn verdict_applied_serde_roundtrip() {
+        let v = Verdict::Applied;
+        let json = serde_json::to_string(&v).unwrap();
+        let back: Verdict = serde_json::from_str(&json).unwrap();
+        assert_eq!(v, back);
+        // Must serialize as "Applied" (PascalCase, consistent with existing verdicts)
+        assert_eq!(json, "\"Applied\"");
+    }
+
+    #[test]
+    fn verdict_all_variants_roundtrip() {
+        for v in [Verdict::Accepted, Verdict::Rejected, Verdict::Ignored, Verdict::Applied] {
+            let json = serde_json::to_string(&v).unwrap();
+            let back: Verdict = serde_json::from_str(&json).unwrap();
+            assert_eq!(v, back);
+        }
     }
 }

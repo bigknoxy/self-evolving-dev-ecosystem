@@ -14,6 +14,8 @@ pub struct Metrics {
     pub suggestions_cached: u64,
     pub feedback_accept: u64,
     pub feedback_reject: u64,
+    #[serde(default)]
+    pub feedback_applied: u64,
     pub by_tool: HashMap<String, ToolMetrics>,
     pub since: DateTime<Utc>,
     pub prompt_version: String, // e.g. "m11-fewshot-v1" for cohort tracking
@@ -26,6 +28,7 @@ impl Default for Metrics {
             suggestions_cached: 0,
             feedback_accept: 0,
             feedback_reject: 0,
+            feedback_applied: 0,
             by_tool: HashMap::new(),
             since: Utc::now(),
             prompt_version: "v1".to_string(),

@@ -74,6 +74,9 @@ pub fn compute_delta(current: &Metrics, baseline: &Metrics) -> Metrics {
         feedback_reject: current
             .feedback_reject
             .saturating_sub(baseline.feedback_reject),
+        feedback_applied: current
+            .feedback_applied
+            .saturating_sub(baseline.feedback_applied),
         by_tool,
         since: current.since,
         prompt_version: current.prompt_version.clone(),
@@ -96,6 +99,7 @@ fn format_counter_block(
     title: &str,
     suggestions_total: u64,
     suggestions_cached: u64,
+    feedback_applied: u64,
     feedback_accept: u64,
     feedback_reject: u64,
 ) -> String {
@@ -103,10 +107,12 @@ fn format_counter_block(
     output.push_str(&format!("{}:\n", title));
     output.push_str(&format!("  suggestions total: {}\n", suggestions_total));
     output.push_str(&format!("  suggestions cached: {}\n", suggestions_cached));
-    output.push_str(&format!("  feedback accept: {}\n", feedback_accept));
-    output.push_str(&format!("  feedback reject: {}\n", feedback_reject));
+    output.push_str(&format!(
+        "  feedback: {} applied, {} accepted, {} rejected\n",
+        feedback_applied, feedback_accept, feedback_reject
+    ));
 
-    let acceptance = format_acceptance_ratio(feedback_accept, feedback_reject);
+    let acceptance = format_acceptance_ratio(feedback_accept + feedback_applied, feedback_reject);
     output.push_str(&format!("  acceptance: {}\n", acceptance));
     output
 }
@@ -126,6 +132,7 @@ fn format_metrics_human(metrics: &Metrics, delta: Option<&Metrics>) -> String {
         "Current",
         metrics.suggestions_total,
         metrics.suggestions_cached,
+        metrics.feedback_applied,
         metrics.feedback_accept,
         metrics.feedback_reject,
     ));
@@ -152,6 +159,7 @@ fn format_metrics_human(metrics: &Metrics, delta: Option<&Metrics>) -> String {
             "Delta vs baseline",
             delta.suggestions_total,
             delta.suggestions_cached,
+            delta.feedback_applied,
             delta.feedback_accept,
             delta.feedback_reject,
         ));

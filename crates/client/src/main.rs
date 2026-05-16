@@ -1,5 +1,6 @@
 //! Organism CLI - talks to the running daemon over a Unix socket.
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -333,7 +334,44 @@ async fn cmd_apply(args: &[String]) -> Result<()> {
 
     let result = resp.payload.get("result").unwrap_or(&resp.payload);
     format_apply_response(result);
+
+    // Post-apply prompt: only on --stage, non-informational suggestions, and interactive stdin
+    if stage {
+        let plan_kind = result
+            .get("plan_kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        if plan_kind != "note" && std::io::stdin().is_terminal() {
+            prompt_apply_outcome(&error_key).await;
+        }
+    }
+
     Ok(())
+}
+
+/// Prompt the user whether they applied the patch. If yes, record Applied feedback via IPC.
+/// Best-effort: errors here do not fail the apply command.
+async fn prompt_apply_outcome(error_key: &str) {
+    use std::io::Write;
+    print!("Did you apply this patch? [y/N]: ");
+    let _ = std::io::stdout().flush();
+
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return;
+    }
+    if !matches!(line.trim(), "y" | "Y") {
+        return;
+    }
+
+    if let Err(e) = send_request(
+        "feedback",
+        serde_json::json!({ "error_key": error_key, "verdict": "applied" }),
+    )
+    .await
+    {
+        eprintln!("warning: could not record applied feedback: {}", e);
+    }
 }
 
 /// Parse feedback command arguments: <error_key> <verdict> [--note "..."]
@@ -351,8 +389,8 @@ fn parse_feedback_args(args: &[String]) -> Result<(String, String, Option<String
     }
 
     let verdict = args[1].clone();
-    if !["accept", "reject", "ignore"].contains(&verdict.as_str()) {
-        anyhow::bail!("feedback: verdict must be 'accept', 'reject', or 'ignore'");
+    if !["accept", "reject", "ignore", "applied"].contains(&verdict.as_str()) {
+        anyhow::bail!("feedback: verdict must be 'accept', 'reject', 'ignore', or 'applied'");
     }
 
     let mut note: Option<String> = None;

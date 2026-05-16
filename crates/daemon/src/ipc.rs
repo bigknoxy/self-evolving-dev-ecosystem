@@ -540,10 +540,11 @@ async fn dispatch(
                 "accept" => Verdict::Accepted,
                 "reject" => Verdict::Rejected,
                 "ignore" => Verdict::Ignored,
+                "applied" => Verdict::Applied,
                 _ => {
                     return Envelope::error_response(
                         &req.id,
-                        "invalid verdict (must be accept, reject, or ignore)",
+                        "invalid verdict (must be accept, reject, ignore, or applied)",
                     );
                 }
             };
@@ -576,12 +577,17 @@ async fn dispatch(
                     m.feedback_reject += 1;
                     m.by_tool.entry(tool.clone()).or_default().rejects += 1;
                 }
+                Verdict::Applied => {
+                    let mut m = metrics.write().await;
+                    m.feedback_applied += 1;
+                    m.by_tool.entry(tool.clone()).or_default().accepts += 1;
+                }
                 Verdict::Ignored => {
                     // No counter for ignored verdicts
                 }
             }
 
-            if matches!(fb.verdict, Verdict::Accepted) {
+            if matches!(fb.verdict, Verdict::Accepted | Verdict::Applied) {
                 // Lock held since line 370; suggestion text + hash already computed.
                 // best-effort snapshot; don't fail feedback if put fails.
                 if let Err(e) =
