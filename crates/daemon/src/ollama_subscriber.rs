@@ -31,6 +31,46 @@ pub enum SubscriberOutcome {
     Skipped(String),
 }
 
+/// Fire desktop notification if all conditions are met; mark hash notified to avoid repeats.
+fn maybe_notify(hash: &str, store: &mut KnowledgeStore, notified: &mut HashSet<String>) {
+    if std::env::var("ORGANISM_NOTIFY").as_deref() != Ok("1") {
+        return;
+    }
+    if notified.contains(hash) {
+        return;
+    }
+    if store.get_suggestion(hash).ok().flatten().is_none() {
+        return;
+    }
+    if let Ok(Some(record)) = store.get_error(hash) {
+        let tool_rate = store
+            .get_style_profile()
+            .ok()
+            .flatten()
+            .and_then(|p| p.by_tool.get(&record.tool).cloned())
+            .map(|s| {
+                let total = s.accepts + s.rejects;
+                if total == 0 {
+                    0.0f32
+                } else {
+                    s.accepts as f32 / total as f32
+                }
+            })
+            .unwrap_or(0.0);
+        if record.occurrences >= 3 && tool_rate >= 0.7 {
+            notified.insert(hash.to_string());
+            if let Err(e) = notify::notify(
+                "organism: suggestion ready",
+                &format!("{} (occ {})", record.last_command, record.occurrences),
+            ) {
+                warn!(error = %e, "ollama_subscriber: notify failed");
+            } else {
+                info!(hash = %hash, "ollama_subscriber: desktop notification fired");
+            }
+        }
+    }
+}
+
 /// Handle a single ErrorClassifiedEvent: check cache and generate suggestion if needed.
 ///
 /// This function is testable and can be called with a mock LlmClient.
@@ -84,35 +124,6 @@ pub async fn handle_event<C: LlmClient>(
             }
             info!(hash = %event.hash, "ollama_subscriber: suggestion generated and cached");
 
-            // Proactive notify: fires when ORGANISM_NOTIFY=1 and error is
-            // high-confidence (occurrences >= 3, per-tool accept rate >= 0.7).
-            if std::env::var("ORGANISM_NOTIFY").as_deref() == Ok("1") {
-                if let Ok(Some(record)) = store.get_error(&event.hash) {
-                    let tool_rate = store
-                        .get_style_profile()
-                        .ok()
-                        .flatten()
-                        .and_then(|p| p.by_tool.get(&record.tool).cloned())
-                        .map(|s| {
-                            let total = s.accepts + s.rejects;
-                            if total == 0 {
-                                0.0f32
-                            } else {
-                                s.accepts as f32 / total as f32
-                            }
-                        })
-                        .unwrap_or(0.0);
-                    if record.occurrences >= 3 && tool_rate >= 0.7 {
-                        if let Err(e) = notify::notify(
-                            "organism: suggestion ready",
-                            &format!("{} (occ {})", record.last_command, record.occurrences),
-                        ) {
-                            warn!(error = %e, "ollama_subscriber: notify failed");
-                        }
-                    }
-                }
-            }
-
             Ok(SubscriberOutcome::Generated)
         }
         Err(e) => {
@@ -159,6 +170,7 @@ pub async fn run(
 
     let mut rx = bus.subscribe();
     let mut seen: HashSet<String> = HashSet::new();
+    let mut notified: HashSet<String> = HashSet::new();
 
     loop {
         tokio::select! {
@@ -169,6 +181,13 @@ pub async fn run(
             msg = rx.recv() => {
         match msg {
             Ok(OrganismEvent::ErrorClassified(e)) => {
+                {
+                    // Notify check: runs on every event, gated by notified set (once per session).
+                    // Requires: ORGANISM_NOTIFY=1, suggestion cached, occurrences>=3, tool rate>=0.7.
+                    let mut store = knowledge.write().await;
+                    maybe_notify(&e.hash, &mut store, &mut notified);
+                }
+
                 // Only process if this is the first occurrence in the 60-second window
                 if !e.is_first_in_window {
                     debug!(hash = %e.hash, "ollama_subscriber: skipping duplicate within window");
