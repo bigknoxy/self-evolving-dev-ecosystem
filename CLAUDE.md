@@ -4,13 +4,13 @@
 Follow the **Agentic Workflow & Resource Management Policies** in `~/.claude/CLAUDE.md` (subagent decomposition, Ollama MCP for local refactor/lint/docs/summarization, sequential synthesis). Project orchestration plan: `EXECUTION-PLAN.md`.
 
 ## Project Overview
-Rust workspace daemon (5 crates). Learns developer patterns. Uses Tokio async runtime.
-Level 0 (Observer): event bus, knowledge store, pattern engine, CLI skeleton.
+Rust workspace daemon (6 crates). Learns developer patterns. Uses Tokio async runtime.
+**Current state: M17 complete** — error classification, Ollama suggestions, feedback loop, StyleProfile, apply workflow, metrics/baseline, notification gates, post-apply prompt.
 
 ## Before Starting
-1. Read `AGENTS.md` — crate dependency order, Rust gotchas, toolchain requirements.
-2. Read `TASKS.md` — task list (001-010), work in crate dependency order.
-3. Read `IMPLEMENTATION.md` — crate layout, IPC protocol, knowledge schema, plugin API.
+1. Read `AGENTS.md` — crate dependency order, Rust gotchas, toolchain requirements, M17 Definition of Done.
+2. Read `IMPLEMENTATION.md` — crate layout, IPC protocol, knowledge schema, Ollama integration, apply workflow.
+3. Read `LEARNINGS.md` — per-milestone gotchas and non-obvious discoveries.
 
 ## Prerequisites
 ```bash
@@ -37,6 +37,8 @@ cargo test -p organism-protocol
 cargo test -p organism-knowledge
 cargo test -p organism-cortex
 cargo test -p organism-daemon
+cargo test -p organism-client
+cargo test -p organism-ollama
 
 # Lint
 cargo clippy --workspace -- -D warnings
@@ -61,10 +63,9 @@ crates/
   protocol/                   — message types, event structs (no internal deps)
   knowledge/                  — file-backed KV store (no internal deps)
   cortex/                     — pattern engine (depends on protocol, knowledge)
+  ollama/                     — Ollama HTTP client (depends on protocol)
   daemon/                     — main binary (depends on all)
   client/                     — CLI binary (depends on protocol)
-tests/
-  integration/                — workspace-wide integration tests
 ```
 
 **Build order matters**: always build `protocol` and `knowledge` before `cortex` before `daemon`.
@@ -84,6 +85,8 @@ All types in `organism-protocol` must:
 1. Implement `Serialize` + `Deserialize`
 2. Roundtrip test: `serialize → str → deserialize → original`
 3. Use `#[serde(tag = "kind", rename_all = "snake_case")]` on event enums
+4. Exception: `Verdict` enum — do NOT add `rename_all`; on-disk format is PascalCase (`"Accepted"`, `"Rejected"`, `"Ignored"`, `"Applied"`). Wire format lowercased manually in `ipc.rs`.
+5. Use `#[serde(default)]` on new fields added to existing persisted structs (backward compat)
 
 ## Testing Requirements
 
@@ -118,3 +121,7 @@ Write a full learning entry in `LEARNINGS.md`.
 - Use `unwrap()` outside of test code
 - Add version numbers to crate deps if they're in `[workspace.dependencies]`
 - Access `~/.organism/` in tests (use `tempfile::TempDir`)
+- Add `rename_all = "snake_case"` to `Verdict` (breaks existing on-disk data)
+- Forget `use std::io::IsTerminal` when calling `.is_terminal()` on stdin — must import trait explicitly
+- Omit `#[serde(default)]` on new fields in persisted structs (old JSON missing field = deserialization error)
+- Run tests using global `OnceLock` state concurrently — add `#[serial]` from `serial_test` crate
