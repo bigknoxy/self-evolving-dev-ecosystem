@@ -228,3 +228,39 @@ Key insight: CLI reads StyleProfile from disk (not IPC `style` method) to avoid 
 
 **Global REFRESH_STATE test ordering** (discovered during M17):
 - `REFRESH_STATE: OnceLock<tokio::sync::Mutex<RefreshState>>` is process-global. Tests share it when run in same process. Mitigated with `#[serial]` and `reset_refresh_state()`, but tests that run in separate threads without serial can still race. Acceptable: failure mode is `test_rate_limit_blocks_immediate_rebuild` occasionally passing when it should block (harmless false-positive, never a false-negative in production).
+
+## Completed: M18 — 2026-05-19
+
+### Learning M18-01 — Export filter propagation via hash set
+
+**Problem:** `SuggestionRecord` has no `error_hash` field — it's keyed *by* error hash in the store filename. When filtering suggestions by tool, no direct field to filter on.
+
+**Root cause:** Store filename encodes the hash; the record itself doesn't repeat it.
+
+**Fix:** Added `list_suggestion_records() -> Vec<(String, SuggestionRecord)>` that extracts the hash from the filename and returns it paired with the record. Export builds a `HashSet<String>` of accepted error hashes from filtered errors, then propagates to suggestions/feedback/accepted.
+
+**Prevention:** When adding new `list_*` methods to KnowledgeStore, if the record doesn't self-identify its key, return `(key, record)` tuples.
+
+---
+
+### Learning M18-02 — `put_accepted` write-once semantics
+
+**Problem:** `--replace` on accepted records doesn't fully overwrite because `put_accepted` checks if the file exists and returns early (write-once design from M9.5).
+
+**Root cause:** M9.5 immutability guarantee: accepted snapshots are never overwritten.
+
+**Fix:** Known limitation — documented in cmd_export.rs comment. `--replace` is best-effort for accepted records.
+
+**Prevention:** When a future milestone needs mutable accepted records, add `force_put_accepted` or relax the immutability gate with an explicit flag.
+
+---
+
+### Learning M18-03 — Env var mutation in tests needs serial isolation
+
+**Problem:** Export tests use `std::env::set_var("ORGANISM_HOME", ...)`. Global env mutation across concurrent tests can cause ordering bugs.
+
+**Root cause:** `cargo test` runs tests in parallel by default; shared env vars are not test-isolated.
+
+**Fix:** Tests pass because each test uses a distinct `tempfile::TempDir` path value, and the env var is set immediately before use in each test. No `#[serial]` needed in practice, but this is fragile.
+
+**Prevention:** For future tests that mutate env vars, add `use serial_test::serial; #[serial]` to guarantee ordering. See CLAUDE.md "Do NOT" list.

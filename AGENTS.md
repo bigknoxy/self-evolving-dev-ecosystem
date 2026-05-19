@@ -147,7 +147,7 @@ When a compilation error occurs in `daemon`, check `protocol`, `knowledge`, and 
 
 ---
 
-## Definition of Done (current: M17)
+## Definition of Done (current: M18)
 
 - [x] L0: All 10 tasks verified (`cargo test --workspace` green)
 - [x] L1: Unix socket IPC, zsh hook, `emit-terminal`
@@ -165,6 +165,7 @@ When a compilation error occurs in `daemon`, check `protocol`, `knowledge`, and 
 - [x] M15: `organism-cli stats` — metrics + baseline capture
 - [x] M16: Gate status in `organism-cli doctor` (per-tool accept rate display)
 - [x] M17: Post-apply prompt + `Verdict::Applied` (2× weight in StyleProfile)
+- [x] M18: `organism-cli export/import` — portable schema-versioned knowledge snapshot
 
 Ongoing gates:
 - `cargo clippy --workspace -- -D warnings` must show 0 warnings
@@ -173,7 +174,6 @@ Ongoing gates:
 
 ## What Comes Next (L4 scope — not yet implemented)
 
-- `organism-cli export` — portable snapshot of errors + suggestions + feedback
 - Inline editor surface / suggestion UI
 - Effector framework (daemon takes actions, not just observes)
 - Digital twin code generation in user style
