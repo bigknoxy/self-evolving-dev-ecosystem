@@ -12,6 +12,7 @@ use tracing_subscriber::EnvFilter;
 use organism_protocol::{Envelope, EventContext, OrganismEvent, TerminalEvent};
 
 mod cmd_backfill;
+mod cmd_export;
 mod cmd_stats;
 
 #[tokio::main]
@@ -36,6 +37,8 @@ async fn main() -> ExitCode {
         "wake" => cmd_wake().await,
         "emit-terminal" => cmd_emit_terminal(&args[2..]).await,
         "backfill-accepts" => cmd_backfill::cmd_backfill_accepts().await,
+        "export" => cmd_export::cmd_export(&args[2..]).map(|_| ()),
+        "import" => cmd_export::cmd_import(&args[2..]).map(|_| ()),
         "stats" => cmd_stats(&args[2..]),
         _ => {
             cmd_help();
@@ -79,6 +82,10 @@ fn cmd_help() {
     println!("            Inject a terminal event into the daemon (used by shell hook)");
     println!("  backfill-accepts");
     println!("            Snapshot existing accepted suggestions into immutable table (one-time)");
+    println!("  export [--out <PATH>] [--tool <TOOL>] [--since <DATE>]");
+    println!("            Export knowledge store to JSON (stdout or file)");
+    println!("  import <FILE> [--merge|--replace]");
+    println!("            Import knowledge store from JSON file");
     println!("  stats [--json] [--capture-baseline] [--baseline] [--since <DURATION>]");
     println!("            Show metrics; capture baseline or compare with baseline");
     println!("  help      Show this help");

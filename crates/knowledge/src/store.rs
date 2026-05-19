@@ -321,6 +321,39 @@ impl KnowledgeStore {
         Ok(hashes)
     }
 
+    /// List all suggestion records paired with their error hash.
+    pub fn list_suggestion_records(&self) -> Result<Vec<(String, SuggestionRecord)>> {
+        let safe_prefix = keys::SUGGESTION_PREFIX.replace([':', '/'], "_");
+        let mut out = Vec::new();
+        for entry in fs::read_dir(&self.data_dir)? {
+            let entry = entry?;
+            let fname = entry.file_name().to_string_lossy().into_owned();
+            if fname.starts_with(&safe_prefix) && fname.ends_with(".json") && !fname.ends_with(".tmp") {
+                if let Some(rest) = fname.strip_prefix(&safe_prefix) {
+                    let hash = rest.strip_suffix(".json").unwrap_or(rest).to_string();
+                    if let Ok(content) = fs::read_to_string(entry.path()) {
+                        if let Ok(rec) = serde_json::from_str::<SuggestionRecord>(&content) {
+                            out.push((hash, rec));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// List all accepted suggestion snapshots.
+    pub fn list_accepted_records(&mut self) -> Result<Vec<AcceptedSuggestion>> {
+        let hashes = self.list_accepted()?;
+        let mut out = Vec::with_capacity(hashes.len());
+        for hash in hashes {
+            if let Some(acc) = self.get_accepted(&hash)? {
+                out.push(acc);
+            }
+        }
+        Ok(out)
+    }
+
     /// Store a style profile (serialized once to a single key).
     pub fn put_style_profile(&mut self, p: &crate::types::StyleProfile) -> Result<()> {
         self.put(keys::STYLE_PROFILE_KEY, p)
